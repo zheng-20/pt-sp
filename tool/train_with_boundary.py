@@ -116,10 +116,12 @@ def main_worker(gpu, ngpus_per_node, argss):
     elif args.arch == 'pointtransformer_primitive_seg_repro':
         from model.pointtransformer.pointtransformer_seg import PointTransformer_PrimSeg as Model
     elif args.arch == 'boundarytransformer_primitive_seg_repro':
+        from model.pointtransformer.pointtransformer_seg import BoundaryNet as BoundaryModel
         from model.pointtransformer.pointtransformer_seg import BoundaryTransformer_PrimSeg as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
+    boundarymodel = BoundaryModel(c=args.fea_dim, k=args.classes, args=args)
     model = Model(c=args.fea_dim, k=args.classes, args=args)
 
     # if args.sync_bn:
@@ -141,7 +143,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         #         "lr": args.base_lr * transformer_lr_scale,
         #     },
         # ]
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay)
+        # optimizer = torch.optim.AdamW(param_dicts, lr=args.base_lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW([{"params": boundarymodel.parameters()}, {"params": model.parameters()}], lr=args.base_lr, weight_decay=args.weight_decay)
 
 
     if main_process():
@@ -151,8 +154,9 @@ def main_worker(gpu, ngpus_per_node, argss):
         logger.info(args)
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
+        logger.info(boundarymodel)
         logger.info(model)
-        logger.info('#Model parameters: {}'.format(sum([x.nelement() for x in model.parameters()])))
+        logger.info('#Model parameters: {}'.format(sum([x.nelement() for x in boundarymodel.parameters()]) + sum([x.nelement() for x in model.parameters()])))
         if args.get("max_grad_norm", None):
             logger.info("args.max_grad_norm = {}".format(args.max_grad_norm))
 
@@ -164,7 +168,13 @@ def main_worker(gpu, ngpus_per_node, argss):
         if args.sync_bn:
             if main_process():
                 logger.info("use SyncBN")
+            boundarymodel = torch.nn.SyncBatchNorm.convert_sync_batchnorm(boundarymodel).cuda()
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
+        boundarymodel = torch.nn.parallel.DistributedDataParallel(
+            boundarymodel,
+            device_ids=[gpu],
+            find_unused_parameters=True
+        )
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[gpu],
@@ -172,6 +182,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         )
 
     else:
+        boundarymodel = torch.nn.DataParallel(boundarymodel.cuda())
         model = torch.nn.DataParallel(model.cuda())
 
     if args.weight:
@@ -179,6 +190,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             if main_process():
                 logger.info("=> loading weight '{}'".format(args.weight))
             checkpoint = torch.load(args.weight)
+            boundarymodel.load_state_dict(checkpoint['boundary_state_dict'])
             model.load_state_dict(checkpoint['state_dict'])
             if main_process():
                 logger.info("=> loaded weight '{}'".format(args.weight))
@@ -191,6 +203,7 @@ def main_worker(gpu, ngpus_per_node, argss):
                 logger.info("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
             args.start_epoch = checkpoint['epoch']
+            boundarymodel.load_state_dict(checkpoint['boundary_state_dict'], strict=True)
             model.load_state_dict(checkpoint['state_dict'], strict=True)
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler_state_dict = checkpoint['scheduler']
@@ -283,7 +296,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info("lr: {}".format(scheduler.get_last_lr()))
 
         # loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
-        feat_loss_train, type_loss_train, boundary_loss_train = train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler)
+        feat_loss_train, type_loss_train, boundary_loss_train = train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
@@ -302,7 +315,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             #     raise NotImplementedError()
             # else:
             #     loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
-            s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion)
+            s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, boundarymodel, model, criterion)
 
             if main_process():
                 writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
@@ -322,7 +335,7 @@ def main_worker(gpu, ngpus_per_node, argss):
                 os.makedirs(args.save_path + "/model/")
             filename = args.save_path + '/model/model_last.pth'
             logger.info('Saving checkpoint to: ' + filename)
-            torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
+            torch.save({'epoch': epoch_log, 'boundary_state_dict': boundarymodel.state_dict(), 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
             if is_best:
                 logger.info('Best validation mIoU updated to: {:.4f}'.format(best_iou))
@@ -333,7 +346,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
+def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scaler, scheduler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # loss_meter = AverageMeter()
@@ -344,6 +357,7 @@ def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
     type_loss_meter = AverageMeter()
     boundary_loss_meter = AverageMeter()
 
+    boundarymodel.train()
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
@@ -358,7 +372,11 @@ def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
 
         use_amp = args.use_amp
         with torch.cuda.amp.autocast(enabled=use_amp):
-            primitive_embedding, type_per_point, boundary_pred = model([coord, normals, offset])
+            boundary_pred = boundarymodel([coord, normals, offset])
+            softmax = torch.nn.Softmax(dim=1)
+            boundary_pred_ = softmax(boundary_pred)
+            boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
+            primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
             assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
@@ -462,7 +480,7 @@ def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
     return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 
-def validate(val_loader, model, criterion):
+def validate(val_loader, boundarymodel, model, criterion):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     batch_time = AverageMeter()
@@ -479,6 +497,7 @@ def validate(val_loader, model, criterion):
 
     torch.cuda.empty_cache()
 
+    boundarymodel.eval()
     model.eval()
     end = time.time()
     for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(val_loader):
@@ -494,7 +513,12 @@ def validate(val_loader, model, criterion):
         #     feat = torch.cat([normals, coord], 1)
         
         with torch.no_grad():
-            primitive_embedding, type_per_point, boundary_pred = model([coord, normals, offset])
+            boundary_pred = boundarymodel([coord, normals, offset])
+            softmax = torch.nn.Softmax(dim=1)
+            boundary_pred_ = softmax(boundary_pred)
+            boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
+
+            primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
             # loss = criterion(output, target)
             feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             type_loss = criterion(type_per_point, semantic)

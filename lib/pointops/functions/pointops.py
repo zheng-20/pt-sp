@@ -174,7 +174,19 @@ def interpolation(xyz, new_xyz, feat, offset, new_offset, k=3):
 
     new_feat = torch.cuda.FloatTensor(new_xyz.shape[0], feat.shape[1]).zero_()
     for i in range(k):
-        new_feat += feat[idx[:, i].long(), :] * weight[:, i].unsqueeze(-1)
+        # 解决上采样索引越界的问题
+        if idx[:, i].long().max() >= feat.shape[0]:
+            idx[idx >= feat.shape[0]] = feat.shape[0] - 1
+            # import ipdb
+            # ipdb.set_trace()
+        try:
+            new_feat += feat[idx[:, i].long(), :] * weight[:, i].unsqueeze(-1)
+        except:
+            import ipdb
+            ipdb.set_trace()
+            print(idx.shape)
+            print(feat.shape)
+            # continue
     return new_feat
 
 

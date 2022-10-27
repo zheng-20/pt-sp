@@ -4,7 +4,7 @@ export PYTHONPATH=./
 # eval "$(conda shell.bash hook)"
 PYTHON=python
 
-TRAIN_CODE=train.py
+TRAIN_CODE=train_with_boundary.py
 # TEST_CODE=test.py
 
 dataset=$1

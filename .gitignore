@@ -2,6 +2,7 @@ __pycache__
 *.pth*
 .autoenv*
 runs
+exp
 build
 checkpoints
 *.prof
