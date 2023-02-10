@@ -6,6 +6,7 @@ import trimesh
 import torch.nn.functional as F
 
 from lib.pointops.functions import pointops
+from lib.boundaryops.functions import boundaryops
 
 
 class PointTransformerLayer(nn.Module):
@@ -49,51 +50,53 @@ def boundary_queryandgroup(nsample, xyz, new_xyz, feat, idx, offset, new_offset,
     if new_xyz is None:
         new_xyz = xyz
     if idx is None:
-        idx, _ = pointops.knnquery(nsample, xyz, new_xyz, offset, new_offset) # (m, nsample)
-        idx = idx.cpu().numpy().tolist()
-        idx_1 = []
-        boundary = boundary.cpu().numpy()
-        for i in range(len(offset)):
-            if i == 0:
-                xyz_ = xyz[0:offset[i]]
-                edges_ = edges[0:offset[i]]
-            else:
-                xyz_ = xyz[offset[i-1]:offset[i]]
-                edges_ = edges[offset[i-1]:offset[i]]
-            # edges = trimesh.geometry.faces_to_edges(F_.cpu().numpy())
-            # edges = torch.tensor(edges).to(F_.device)
+        idx, _ = boundaryops.boundaryquery(nsample, xyz, new_xyz, offset, new_offset, edges, boundary)
 
-            for j in range(len(xyz_)):
-                q = queue.Queue()
-                q.put(j)
-                n_p = []
-                n_p.append(j)
+        # idx, _ = pointops.knnquery(nsample, xyz, new_xyz, offset, new_offset) # (m, nsample)
+        # idx = idx.cpu().numpy().tolist()
+        # idx_1 = []
+        # boundary = boundary.cpu().numpy()
+        # for i in range(len(offset)):
+        #     if i == 0:
+        #         xyz_ = xyz[0:offset[i]]
+        #         edges_ = edges[0:offset[i]]
+        #     else:
+        #         xyz_ = xyz[offset[i-1]:offset[i]]
+        #         edges_ = edges[offset[i-1]:offset[i]]
+        #     # edges = trimesh.geometry.faces_to_edges(F_.cpu().numpy())
+        #     # edges = torch.tensor(edges).to(F_.device)
 
-                if boundary[j] == 1:
-                    n_p = idx[j]
-                else:
-                    while(len(n_p) < nsample):
-                        if q.qsize() != 0:
-                            q_n = q.get()
-                        else:
-                            n_p = idx[j]
-                            break
-                        # n, _ = np.where(edges == q_n)
-                        # nn_idx = np.unique(edges[n][edges[n] != q_n])
-                        # nn_idx = nn_idx[boundary[nn_idx] == 0]
-                        nn_idx = edges_[q_n][boundary[edges_[q_n]] == 0]
-                        for nn in nn_idx:
-                            if nn not in n_p:
-                                q.put(nn)
-                                n_p.append(nn)
-                            if len(n_p) == nsample:
-                                break
-                # if type(n_p) != torch.Tensor:
-                #     n_p = torch.tensor(n_p)
-                idx_1.append(n_p)
-                # del q
-        idx_1 = torch.tensor(idx_1)
-        idx = idx_1
+        #     for j in range(len(xyz_)):
+        #         q = queue.Queue()
+        #         q.put(j)
+        #         n_p = []
+        #         n_p.append(j)
+
+        #         if boundary[j] == 1:
+        #             n_p = idx[j]
+        #         else:
+        #             while(len(n_p) < nsample):
+        #                 if q.qsize() != 0:
+        #                     q_n = q.get()
+        #                 else:
+        #                     n_p = idx[j]
+        #                     break
+        #                 # n, _ = np.where(edges == q_n)
+        #                 # nn_idx = np.unique(edges[n][edges[n] != q_n])
+        #                 # nn_idx = nn_idx[boundary[nn_idx] == 0]
+        #                 nn_idx = edges_[q_n][boundary[edges_[q_n]] == 0]
+        #                 for nn in nn_idx:
+        #                     if nn not in n_p:
+        #                         q.put(nn)
+        #                         n_p.append(nn)
+        #                     if len(n_p) == nsample:
+        #                         break
+        #         # if type(n_p) != torch.Tensor:
+        #         #     n_p = torch.tensor(n_p)
+        #         idx_1.append(n_p)
+        #         # del q
+        # idx_1 = torch.tensor(idx_1)
+        # idx = idx_1
                     
     n, m, c = xyz.shape[0], new_xyz.shape[0], feat.shape[1]
     grouped_xyz = xyz[idx.view(-1).long(), :].view(m, nsample, 3) # (m, nsample, 3)
@@ -129,7 +132,7 @@ class BoundaryTransformerLayer(nn.Module):
         p, x, o = pxo  # (n, 3), (n, c), (b)
         x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
         x_k, idx = boundary_queryandgroup(self.nsample, p, p, x_k, None, o, o, edges, boundary, use_xyz=True)  # (n, nsample, 3+c)
-        x_v, idx = boundary_queryandgroup(self.nsample, p, p, x_v, idx, o, o, edges, boundary, use_xyz=False)  # (n, nsample, c)
+        x_v, idx = boundary_queryandgroup(self.nsample, p, p, x_v, None, o, o, edges, boundary, use_xyz=False)  # (n, nsample, c)
         # x_k = pointops.queryandgroup(self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
         # x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
         p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
@@ -226,6 +229,57 @@ class TransitionUp(nn.Module):
         return x
 
 
+class TransitionDown_v2(nn.Module):
+    def __init__(self, in_channels, out_channels, ratio, k, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.ratio = ratio
+        self.k = k
+        self.norm = norm_layer(in_channels) if norm_layer else None
+        if ratio != 1:
+            self.linear = nn.Linear(in_channels, out_channels, bias=False)
+            self.pool = nn.MaxPool1d(k)
+        else:
+            self.linear = nn.Linear(in_channels, out_channels, bias=False)
+
+    def forward(self, pxo):
+        xyz, feats, offset = pxo  # (n, 3), (n, c), (b)
+        if self.ratio != 1:
+            n_offset, count = [int(offset[0].item()*self.ratio)+1], int(offset[0].item()*self.ratio)+1
+            for i in range(1, offset.shape[0]):
+                count += ((offset[i].item() - offset[i-1].item())*self.ratio) + 1
+                n_offset.append(count)
+            n_offset = torch.cuda.IntTensor(n_offset)
+            idx = pointops.furthestsampling(xyz, offset, n_offset)  # (m)
+            n_xyz = xyz[idx.long(), :]  # (m, 3)
+
+            feats = pointops.queryandgroup(self.k, xyz, n_xyz, feats, None, offset, n_offset, use_xyz=False)  # (m, nsample, 3+c)
+            m, k, c = feats.shape
+            feats = self.linear(self.norm(feats.view(m*k, c)).view(m, k, c)).transpose(1, 2).contiguous()
+            feats = self.pool(feats).squeeze(-1)  # (m, c)
+        else:
+            feats = self.linear(self.norm(feats))
+            n_xyz = xyz
+            n_offset = offset
+        
+        return [n_xyz, feats, n_offset]
+
+
+class Upsample(nn.Module):
+    def __init__(self, k, in_channels, out_channels, bn_momentum=0.02):
+        super().__init__()
+        self.k = k
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        self.linear1 = nn.Sequential(nn.LayerNorm(out_channels), nn.Linear(out_channels, out_channels))
+        self.linear2 = nn.Sequential(nn.LayerNorm(in_channels), nn.Linear(in_channels, out_channels))
+
+    def forward(self, pxo1, pxo2):
+        support_xyz, support_feats, support_offset = pxo1; xyz, feats, offset = pxo2
+        feats = self.linear1(support_feats) + pointops.interpolation(xyz, support_xyz, self.linear2(feats), offset, support_offset)
+        return feats
+
+
 class PointTransformerBlock(nn.Module):
     expansion = 1
 
@@ -251,7 +305,7 @@ class PointTransformerBlock(nn.Module):
 
 
 class PointTransformerSeg(nn.Module):
-    def __init__(self, block, blocks, c=6, k=13):
+    def __init__(self, block, blocks, c=6, k=13, args=None):
         super().__init__()
         self.c = c
         self.in_planes, planes = c, [32, 64, 128, 256, 512]
@@ -690,3 +744,131 @@ class BoundaryNet(nn.Module):
 
             
         return boundary_per_point
+
+
+class PointTransformer_Unet_PrimSeg(nn.Module):
+    def __init__(self, block, blocks, c=6, k=13, args=None):
+        super().__init__()
+        self.c = c
+        self.in_planes, planes = c, [32, 64, 128, 256, 512]
+        fpn_planes, fpnhead_planes, share_planes = 128, 64, 8
+        stride, nsample = [1, 0.25, 0.25, 0.25, 0.25], [8, 16, 16, 16, 16]
+        self.enc1 = self._make_enc(block, planes[0], blocks[0], share_planes, stride=stride[0], nsample=nsample[0])  # N/1
+        self.enc2 = self._make_enc(block, planes[1], blocks[1], share_planes, stride=stride[1], nsample=nsample[1])  # N/4
+        self.enc3 = self._make_enc(block, planes[2], blocks[2], share_planes, stride=stride[2], nsample=nsample[2])  # N/16
+        self.enc4 = self._make_enc(block, planes[3], blocks[3], share_planes, stride=stride[3], nsample=nsample[3])  # N/64
+        self.enc5 = self._make_enc(block, planes[4], blocks[4], share_planes, stride=stride[4], nsample=nsample[4])  # N/256
+        # self.dec5 = self._make_dec(block, planes[4], 2, share_planes, nsample=nsample[4], is_head=True)  # transform p5
+        self.dec4 = self._make_dec(block, planes[3], 2, share_planes, nsample=nsample[3])  # fusion p5 and p4
+        self.dec3 = self._make_dec(block, planes[2], 2, share_planes, nsample=nsample[2])  # fusion p4 and p3
+        self.dec2 = self._make_dec(block, planes[1], 2, share_planes, nsample=nsample[1])  # fusion p3 and p2
+        self.dec1 = self._make_dec(block, planes[0], 2, share_planes, nsample=nsample[0])  # fusion p2 and p1
+        self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], k))
+        self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
+        self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+
+    def _make_enc(self, block, planes, blocks, share_planes=8, stride=1, nsample=16):
+        layers = []
+        layers.append(TransitionDown_v2(self.in_planes, planes * block.expansion, ratio=stride, k=nsample))
+        self.in_planes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+        return nn.Sequential(*layers)
+    
+    def _make_dec(self, block, planes, blocks, share_planes=8, nsample=16, is_head=False):
+        layers = []
+        layers.append(Upsample(nsample, self.in_planes, None if is_head else planes * block.expansion))
+        self.in_planes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+        return nn.Sequential(*layers)
+    
+    def forward(self, pxo):
+        p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
+        x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
+        p1, x1, o1 = self.enc1([p0, x0, o0])
+        p2, x2, o2 = self.enc2([p1, x1, o1])
+        p3, x3, o3 = self.enc3([p2, x2, o2])
+        p4, x4, o4 = self.enc4([p3, x3, o3])
+        p5, x5, o5 = self.enc5([p4, x4, o4])
+        # x5 = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
+        x4 = self.dec4[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5, o5]), o4])[1]
+        x3 = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4, o4]), o3])[1]
+        x2 = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3, o3]), o2])[1]
+        x1 = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1])[1]
+        type_per_point = self.cls(x1)
+        primitive_embedding = self.embedding(x1)
+        boundary_pred = self.boundary(x1)
+
+        return primitive_embedding, type_per_point, boundary_pred
+
+def pointtransformer_Unit_seg_repro(**kwargs):
+    model = PointTransformer_Unet_PrimSeg(PointTransformerBlock, [2, 3, 4, 6, 3], **kwargs)
+    return model
+
+
+class BoundaryPointTransformer_Unet_PrimSeg(nn.Module):
+    def __init__(self, block, blocks, c=6, k=13, args=None):
+        super().__init__()
+        self.c = c
+        self.in_planes, planes = c, [32, 64, 128, 256, 512]
+        fpn_planes, fpnhead_planes, share_planes = 128, 64, 8
+        stride, nsample = [1, 0.25, 0.25, 0.25, 0.25], [8, 16, 16, 16, 16]
+        self.enc1 = self._make_enc(block, planes[0], blocks[0], share_planes, stride=stride[0], nsample=nsample[0])  # N/1
+        self.enc2 = self._make_enc(block, planes[1], blocks[1], share_planes, stride=stride[1], nsample=nsample[1])  # N/4
+        self.enc3 = self._make_enc(block, planes[2], blocks[2], share_planes, stride=stride[2], nsample=nsample[2])  # N/16
+        self.enc4 = self._make_enc(block, planes[3], blocks[3], share_planes, stride=stride[3], nsample=nsample[3])  # N/64
+        self.enc5 = self._make_enc(block, planes[4], blocks[4], share_planes, stride=stride[4], nsample=nsample[4])  # N/256
+        # self.dec5 = self._make_dec(block, planes[4], 2, share_planes, nsample=nsample[4], is_head=True)  # transform p5
+        self.dec4 = self._make_dec(block, planes[3], 2, share_planes, nsample=nsample[3])  # fusion p5 and p4
+        self.dec3 = self._make_dec(block, planes[2], 2, share_planes, nsample=nsample[2])  # fusion p4 and p3
+        self.dec2 = self._make_dec(block, planes[1], 2, share_planes, nsample=nsample[1])  # fusion p3 and p2
+        self.dec1 = self._make_dec(block, planes[0], 2, share_planes, nsample=nsample[0])  # fusion p2 and p1
+        self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], k))
+        # self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
+        self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+
+    def _make_enc(self, block, planes, blocks, share_planes=8, stride=1, nsample=16):
+        layers = []
+        layers.append(TransitionDown_v2(self.in_planes, planes * block.expansion, ratio=stride, k=nsample))
+        self.in_planes = planes * block.expansion
+        if planes == 32:    # 首层添加Boundary采样
+            block = BoundaryTransformerBlock
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+        return nn.Sequential(*layers)
+    
+    def _make_dec(self, block, planes, blocks, share_planes=8, nsample=16, is_head=False):
+        layers = []
+        layers.append(Upsample(nsample, self.in_planes, None if is_head else planes * block.expansion))
+        self.in_planes = planes * block.expansion
+        if planes == 32:
+            block = BoundaryTransformerBlock
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+        return nn.Sequential(*layers)
+    
+    def forward(self, pxo, edges, boundary):
+        p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
+        x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
+        # p1, x1, o1 = self.enc1([p0, x0, o0])
+        p1, x1, o1 = self.enc1[1](self.enc1[0]([p0, x0, o0]), edges, boundary)
+        p2, x2, o2 = self.enc2([p1, x1, o1])
+        p3, x3, o3 = self.enc3([p2, x2, o2])
+        p4, x4, o4 = self.enc4([p3, x3, o3])
+        p5, x5, o5 = self.enc5([p4, x4, o4])
+        # x5 = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
+        x4 = self.dec4[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5, o5]), o4])[1]
+        x3 = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4, o4]), o3])[1]
+        x2 = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3, o3]), o2])[1]
+        # x1 = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1])[1]
+        x1 = self.dec1[1]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1], edges, boundary)[1]
+        type_per_point = self.cls(x1)
+        primitive_embedding = self.embedding(x1)
+        # boundary_pred = self.boundary(x1)
+
+        return primitive_embedding, type_per_point
+
+def boundarypointtransformer_Unit_seg_repro(**kwargs):
+    model = BoundaryPointTransformer_Unet_PrimSeg(PointTransformerBlock, [2, 3, 4, 6, 3], **kwargs)
+    return model

@@ -1,6 +1,6 @@
 DATA:
   data_name: abc
-  data_root: /home/fz20/dataset/ABC_edges # Fill in the pre-processed data path (which contains the .npy files)
+  data_root: /data/fz20/dataset/ABC # Fill in the pre-processed data path (which contains the .npy files)
   test_area: 5
   classes: 10
   fea_dim: 6
@@ -11,7 +11,7 @@ DATA:
 
 TRAIN:
   #arch
-  arch: boundarytransformer_primitive_seg_repro
+  arch: boundarypointtransformer_Unit_seg_repro
   stem_transformer: True
   use_xyz: True
   sync_bn: True  # adopt sync_bn or not
@@ -34,7 +34,7 @@ TRAIN:
   max_num_neighbors: 34 # For KPConv
   ratio: 0.25
   k: 16
-  bandwidth: 2
+  bandwidth: 1.3
 
   # training
   aug: True
@@ -49,12 +49,12 @@ TRAIN:
   use_amp: True
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [7]
+  train_gpu: [5]
   workers: 16  # data loader workers
   batch_size: 32  # batch size for training
   batch_size_val: 6  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
-  epochs: 100
+  epochs: 200
   start_epoch: 0
   step_epoch: 30
   multiplier: 0.1
@@ -80,10 +80,10 @@ TEST:
   test_list: dataset/s3dis/list/val5.txt
   test_list_full: dataset/s3dis/list/val5_full.txt
   split: val  # split in [train, val and test]
-  test_gpu: [0]
+  test_gpu: [1]
   test_workers: 4
-  batch_size_test: 4
-  model_path: # Fill the path of the trained .pth file model
+  batch_size_test: 6
+  model_path: /home/fz20/project/point-transformer-boundary/exp/abc/runs-unet-base/model/model_best.pth # Fill the path of the trained .pth file model
   save_folder: exp/abc/test # Fill the path to store the .npy files for each scene
   names_path: data/s3dis/s3dis_names.txt
-  visual: False
+  visual: True

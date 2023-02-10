@@ -37,7 +37,7 @@ def collate_fn(batch):
     #     # print("item shape:",item.shape)
     #     count += item.shape[0]
     #     F_offset.append(count)
-    return torch.cat(coord), torch.cat(normals), torch.cat(boundary), torch.cat(label), torch.cat(semantic), torch.cat(param), torch.IntTensor(offset), np.concatenate(edges)
+    return torch.cat(coord), torch.cat(normals), torch.cat(boundary), torch.cat(label), torch.cat(semantic), torch.cat(param), torch.IntTensor(offset), torch.cat(edges)
 
 def collate_fn_limit(batch, max_batch_points, logger):
     coord, normals, boundary, label, semantic, param, F = list(zip(*batch))
@@ -110,7 +110,7 @@ def data_prepare_abc(coord, normals, boundary, label, semantic, param, F, edges,
     param = torch.FloatTensor(param)
     label = torch.LongTensor(label)
     F = torch.LongTensor(F)
-    # edges = torch.LongTensor(edges)
+    edges = torch.IntTensor(edges)
     return coord, normals, boundary, label, semantic, param, F, edges
 
 def dataAugment(self, xyz, normal, jitter=False, flip=False, rot=False):

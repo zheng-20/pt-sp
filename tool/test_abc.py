@@ -61,7 +61,7 @@ def main_process():
 
 def main():
     args = get_parser()
-    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
+    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.test_gpu)
     if not os.path.exists(args.save_folder):
         os.makedirs(args.save_folder)
     # import torch.backends.mkldnn
@@ -109,9 +109,16 @@ def main_worker(gpu, ngpus_per_node, argss):
     # get model
     if args.arch == 'pointtransformer_seg_repro':
         from model.pointtransformer.pointtransformer_seg import pointtransformer_seg_repro as Model
+    elif args.arch == 'pointtransformer_primitive_seg_repro':
+        from model.pointtransformer.pointtransformer_seg import PointTransformer_PrimSeg as Model
+    elif args.arch == 'boundarytransformer_primitive_seg_repro':
+        from model.pointtransformer.pointtransformer_seg import BoundaryTransformer_PrimSeg as Model
+    elif args.arch == 'pointtransformer_Unit_seg_repro':
+        from model.pointtransformer.pointtransformer_seg import pointtransformer_Unit_seg_repro as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
-    model = Model(c=args.fea_dim, k=args.classes)
+    # model = Model(c=args.fea_dim, k=args.classes)
+    model = Model(c=args.fea_dim, k=args.classes, args=args)
 
     # if args.arch == 'stratified_transformer':
         
@@ -167,15 +174,15 @@ def main_worker(gpu, ngpus_per_node, argss):
     if args.optimizer == 'SGD':
         optimizer = torch.optim.SGD(model.parameters(), lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
     elif args.optimizer == 'AdamW':     # Adamw 即 Adam + weight decate ,效果与 Adam + L2正则化相同,但是计算效率更高
-        transformer_lr_scale = args.get("transformer_lr_scale", 0.1)
-        param_dicts = [
-            {"params": [p for n, p in model.named_parameters() if "blocks" not in n and p.requires_grad]},
-            {
-                "params": [p for n, p in model.named_parameters() if "blocks" in n and p.requires_grad],
-                "lr": args.base_lr * transformer_lr_scale,
-            },
-        ]
-        optimizer = torch.optim.AdamW(param_dicts, lr=args.base_lr, weight_decay=args.weight_decay)
+        # transformer_lr_scale = args.get("transformer_lr_scale", 0.1)
+        # param_dicts = [
+        #     {"params": [p for n, p in model.named_parameters() if "blocks" not in n and p.requires_grad]},
+        #     {
+        #         "params": [p for n, p in model.named_parameters() if "blocks" in n and p.requires_grad],
+        #         "lr": args.base_lr * transformer_lr_scale,
+        #     },
+        # ]
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay)
 
     if main_process():
         global logger, writer
@@ -569,6 +576,27 @@ def main_worker(gpu, ngpus_per_node, argss):
 #     return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 
+def write_obj(pc, pred, gt, color, type):
+    time_tag = time.strftime("%Y%m%d-%H%M%S")
+    fp = open('/home/fz20/project/point-transformer-boundary/visual/{}_{}.obj'.format(type+'_pred', time_tag), 'w')
+    for j in range(pc.shape[0]):
+        v = pc[j]
+        if pred[j] < 0:
+            p = np.array([0,0,0])
+        else:
+            p = color[pred[j]]
+        fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+    fp.close()
+    fp = open('/home/fz20/project/point-transformer-boundary/visual/{}_{}.obj'.format(type+'_gt', time_tag), 'w')
+    for j in range(pc.shape[0]):
+        v = pc[j]
+        if gt[j] < 0:
+            p = np.array([0,0,0])
+        else:
+            p = color[gt[j]]
+        fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+    fp.close()
+
 def validate(val_loader, model, criterion):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
@@ -588,7 +616,7 @@ def validate(val_loader, model, criterion):
 
     model.eval()
     end = time.time()
-    for i, (coord, normals, boundary, label, semantic, param, offset, F) in enumerate(val_loader):
+    for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(val_loader):
         data_time.update(time.time() - end)
     
         # offset_ = offset.clone()
@@ -605,9 +633,9 @@ def validate(val_loader, model, criterion):
         # neighbor_idx = neighbor_idx.cuda(non_blocking=True)
         # assert batch.shape[0] == normals.shape[0]
 
-        coord, normals, boundary, label, semantic, param, offset, F = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), F.cuda(non_blocking=True)
-        
+        coord, normals, boundary, label, semantic, param, offset = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+
         if semantic.shape[-1] == 1:
             semantic = semantic[:, 0]  # for cls
 
@@ -649,23 +677,56 @@ def validate(val_loader, model, criterion):
             boundary_pred_ = softmax(boundary_pred)
             boundary_pred_ = (boundary_pred_[:,1] > 0.5).data.cpu().numpy().astype('int32')
             bound_color = np.array([[0.41176,0.41176,0.41176], [1,0,0]])
+            type_color_map={
+                # (key:value  represents  primitiveType: rgb)
+                1: [1, 0, 0],  # plane         red
+                3: [0, 1, 0],  # cone        green
+                4: [0, 0, 1],  # cylinder   blue
+                5: [1, 97/255, 0],  # sphere         orange
+
+                2: [160/255,32/255,240/255],  # open b-spline  purple
+                8: [160/255,32/255,240/255],  # Extrusion open b-spline  purple
+                0: [192/255,192/255,192/255],  # Torus closed b-spline  gray
+                6: [192/255,192/255,192/255],  # Other closed b-spline  gray
+                7: [192/255,192/255,192/255],  # Revolution closed b-spline  gray
+                9: [192/255,192/255,192/255],  # closed b-spline  gray
+            }
+            primitive_colors = np.random.rand(10000, 3)
+
+            type_pred_ = softmax(type_per_point)
+            type_pred_ = torch.argmax(type_per_point, dim=-1).data.cpu().numpy()
             for k in range(len(offset)):
                 if k == 0:
                     pb = boundary_pred_[0:offset[k]]
+                    pb_gt = boundary[0:offset[k]]
+                    prim_pred = spec_cluster_pred[0:offset[k]]
+                    prim_gt = label[0:offset[k]]
+                    type_pred = type_pred_[0:offset[k]]
+                    type_gt = semantic[0:offset[k]].data.cpu().numpy().astype('int32')
                     pc = coord[0:offset[k]]
                 else:
                     pb = boundary_pred_[offset[k-1]:offset[k]]
+                    pb_gt = boundary[offset[k-1]:offset[k]]
+                    prim_pred = spec_cluster_pred[offset[k-1]:offset[k]]
+                    prim_gt = label[offset[k-1]:offset[k]]
+                    type_pred = type_pred_[offset[k-1]:offset[k]]
+                    type_gt = semantic[offset[k-1]:offset[k]].data.cpu().numpy().astype('int32')
                     pc = coord[offset[k-1]:offset[k]]
 
-                fp = open('/home/fz20/Project/Prim-Stratified-Transformer/visual/%s_%s.obj'%(i,k), 'w')
-                for j in range(pc.shape[0]):
-                    v = pc[j]
-                    if pb[j] < 0:
-                        p = np.array([0,0,0])
-                    else:
-                        p = bound_color[pb[j]]
-                    fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
-                fp.close()
+                # fp = open('/home/fz20/project/point-transformer-boundary/visual/boundary_{}.obj'.format(time.strftime("%Y%m%d-%H%M%S")), 'w')
+                # for j in range(pc.shape[0]):
+                #     v = pc[j]
+                #     if pb[j] < 0:
+                #         p = np.array([0,0,0])
+                #     else:
+                #         p = bound_color[pb[j]]
+                #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+                # fp.close()
+                write_obj(pc, pb, pb_gt, bound_color, type='boundary')
+                write_obj(pc, prim_pred, prim_gt, primitive_colors, type='prim')
+                write_obj(pc, type_pred, type_gt, type_color_map, type='semantic')
+
+
         # All Reduce loss
         if args.multiprocessing_distributed:
             dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))

@@ -12,6 +12,7 @@ from util.voxelize import voxelize
 from util.data_util import sa_create, collate_fn, dataAugment, data_prepare_abc
 # from util.data_util import data_prepare_v101 as data_prepare
 # import open3d as o3d
+from lib.boundaryops.functions import boundaryops
 
 
 
@@ -45,7 +46,7 @@ class ABC_Dataset(Dataset):
         # data = SA.attach("shm://{}".format(self.data_list[data_idx])).copy()
         item = self.data_list[data_idx]
         data_path = os.path.join(self.data_root, item + '.npz')
-        data = np.load(data_path, allow_pickle=True)
+        data = np.load(data_path)
 
         coord, normals, boundary, label, semantic, param, F, edges = data['V'],data['N'],data['B'],data['L'],data['S'],data['T_param'],data['F'],data['edges']
         coord, normals, boundary, label, semantic, param, F, edges = data_prepare_abc(coord, normals, boundary, label, semantic, param, F, edges, voxel_size=self.voxel_size)
@@ -60,7 +61,7 @@ class ABC_Dataset(Dataset):
 
 
 if __name__ == '__main__':
-    data_root = '/home/fz20/dataset/ABC'
+    data_root = '/data/fz20/dataset/ABC'
     test_area, voxel_size, voxel_max = 5, 0.005, 80000
 
     point_data = ABC_Dataset(split='train', data_root=data_root, voxel_size=voxel_size, voxel_max=voxel_max)
@@ -73,13 +74,17 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(manual_seed)
     def worker_init_fn(worker_id):
         random.seed(manual_seed + worker_id)
-    train_loader = torch.utils.data.DataLoader(point_data, batch_size=16, shuffle=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+    train_loader = torch.utils.data.DataLoader(point_data, batch_size=3, shuffle=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
     for idx in range(1):
         end = time.time()
         voxel_num = []
-        for i, (coord, normals, boundary, label, semantic, param, offset, F) in enumerate(train_loader):
-            coord, normals, boundary, label, semantic, param, offset = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                                label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(train_loader):
+            coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+                                label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
+            start = time.time()
+            boundaryops.boundaryquery(8, coord, coord, offset, offset, edges, boundary)
+            print(time.time()-start)
+
             if boundary.max() > 1 or boundary.min() < 0:
                 import ipdb
                 ipdb.set_trace()

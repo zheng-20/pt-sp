@@ -364,8 +364,8 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
     for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        coord, normals, boundary, label, semantic, param, offset = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
 
         # if args.concat_xyz:
         #     feat = torch.cat([normals, coord], 1)
@@ -376,7 +376,7 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
             softmax = torch.nn.Softmax(dim=1)
             boundary_pred_ = softmax(boundary_pred)
             boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
-            primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
+            primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary.int())
             assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
@@ -503,8 +503,8 @@ def validate(val_loader, boundarymodel, model, criterion):
     for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(val_loader):
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        coord, normals, boundary, label, semantic, param, offset = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
 
         if semantic.shape[-1] == 1:
             semantic = semantic[:, 0]  # for cls

@@ -117,6 +117,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.pointtransformer.pointtransformer_seg import PointTransformer_PrimSeg as Model
     elif args.arch == 'boundarytransformer_primitive_seg_repro':
         from model.pointtransformer.pointtransformer_seg import BoundaryTransformer_PrimSeg as Model
+    elif args.arch == 'pointtransformer_Unit_seg_repro':
+        from model.pointtransformer.pointtransformer_seg import pointtransformer_Unit_seg_repro as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
