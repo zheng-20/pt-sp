@@ -30,6 +30,36 @@ class FurthestSampling(Function):
 furthestsampling = FurthestSampling.apply
 
 
+class FurthestSampling_offset(Function):
+    @staticmethod
+    def forward(ctx, xyz, offset, m):
+        """
+        input: xyz: (n, 3) and n > m, offset: int32, m: int32
+        output: idx: (b, m)
+        """
+        assert xyz.is_contiguous()
+        # b, n, _ = xyz.size()
+        b = offset.size(0)
+        idx = torch.cuda.IntTensor(b, m)
+        for i in range(b):
+            if i == 0:
+                xyz_i = xyz[:offset[i]].unsqueeze(0)
+            else:
+                xyz_i = xyz[offset[i-1]:offset[i]].unsqueeze(0)
+            n = xyz_i.size(1)
+            idx_i = torch.cuda.IntTensor(1, m)
+            temp = torch.cuda.FloatTensor(1, n).fill_(1e10)
+            pointops_sp_cuda.furthestsampling_cuda(1, n, m, xyz_i, temp, idx_i)
+            idx[i] = idx_i
+        return idx
+
+    @staticmethod
+    def backward(xyz, a=None):
+        return None, None, None
+
+furthestsampling_offset = FurthestSampling_offset.apply
+
+
 class Gathering(Function):
     @staticmethod
     def forward(ctx, features, idx):
@@ -56,6 +86,43 @@ class Gathering(Function):
         return grad_features, None
 
 gathering = Gathering.apply
+
+
+class Gathering_offset(Function):
+    @staticmethod
+    def forward(ctx, features, offset, idx):
+        """
+        input: features: (c, n), offset: int32, idx : (b, m) tensor
+        output: (b, c, m)
+        """
+        assert features.is_contiguous()
+        assert idx.is_contiguous()
+        c, n = features.size()
+        b, m = idx.size()
+        output = torch.cuda.FloatTensor(b, c, m)
+        for i in range(b):
+            if i == 0:
+                features_i = features[:, :offset[i]].unsqueeze(0)
+            else:
+                features_i = features[:, offset[i-1]:offset[i]].unsqueeze(0)
+            n = features_i.size(2)
+            output_i = torch.cuda.FloatTensor(1, c, m)
+            idx_i = idx[i].unsqueeze(0)
+            pointops_sp_cuda.gathering_forward_cuda(1, c, n, m, features_i, idx_i, output_i)
+            output[i] = output_i
+        ctx.for_backwards = (idx, c, n)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        idx, c, n = ctx.for_backwards
+        b, m = idx.size()
+        grad_features = torch.cuda.FloatTensor(b, c, n).zero_()
+        grad_out_data = grad_out.data.contiguous()
+        pointops_sp_cuda.gathering_backward_cuda(b, c, n, m, grad_out_data, idx, grad_features.data)
+        return grad_features, None, None
+
+gathering_offset = Gathering_offset.apply
 
 class GatheringInt(Function):
     @staticmethod
@@ -113,6 +180,64 @@ class Gathering_Cluster(Function):
         return grad_features, None, None
 
 gathering_cluster = Gathering_Cluster.apply
+
+class Gathering_Cluster_offset(Function):
+    @staticmethod
+    def forward(ctx, features, idx, idx_3d, offset):
+        """
+        input: features: (b, c, n), idx : (b, m) tensor, idx_3d: (b, m, k)
+        output: (b, c, m)
+        """
+        assert features.is_contiguous()
+        assert idx.is_contiguous()
+        assert idx_3d.is_contiguous()
+        b, c, n = features.size()
+        m = idx.size(0)
+        k = idx_3d.size(2)
+        # output = torch.cuda.FloatTensor(b, c, m)
+        for i in range(b):
+            features_i = features[i].unsqueeze(0)
+            if i == 0:
+                idx_i = idx[:offset[0]].unsqueeze(0)
+                idx_3d_i = idx_3d[:, :offset[0]]
+            else:
+                idx_i = idx[offset[i-1]:offset[i]].unsqueeze(0)
+                idx_3d_i = idx_3d[:, offset[i-1]:offset[i]]
+            m = idx_i.size(1)
+            output_i = torch.cuda.FloatTensor(1, c, m)
+            pointops_sp_cuda.gathering_cluster_forward_cuda(1, c, n, m, k, features_i, idx_i, idx_3d_i, output_i)
+            if i == 0:
+                output = output_i
+            else:
+                output = torch.cat([output, output_i], 2)
+        ctx.for_backwards = (idx, idx_3d, c, n, offset)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        idx, idx_3d, c, n, offset = ctx.for_backwards
+        m = idx.size(0)
+        b = offset.size(0)
+        k = idx_3d.size(2)
+        grad_features = torch.cuda.FloatTensor(b, c, n).zero_()
+        for i in range(b):
+            if i == 0:
+                idx_i = idx[:offset[0]].unsqueeze(0)
+                idx_3d_i = idx_3d[:, :offset[0]]
+                grad_out_i = grad_out[:,:,:offset[0]]
+            else:
+                idx_i = idx[offset[i-1]:offset[i]].unsqueeze(0)
+                idx_3d_i = idx_3d[:, offset[i-1]:offset[i]]
+                grad_out_i = grad_out[:,:,offset[i-1]:offset[i]]
+            m = idx_i.size(1)
+            grad_features_i = torch.cuda.FloatTensor(1, c, n).zero_()
+            grad_out_data = grad_out_i.data.contiguous()
+            pointops_sp_cuda.gathering_cluster_backward_cuda(1, c, n, m, k, grad_out_data, idx_i, idx_3d_i, grad_features_i.data)
+            grad_features[i] = grad_features_i
+        # print(grad_features.shape)
+        return grad_features, None, None, None
+
+gathering_cluster_offset = Gathering_Cluster_offset.apply
 
 
 class NearestNeighbor(Function):
@@ -206,6 +331,61 @@ class Grouping(Function):
         return grad_features, None
 
 grouping = Grouping.apply
+
+class Grouping_offset(Function):
+    @staticmethod
+    def forward(ctx, features: torch.Tensor, idx: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+        """
+        input: features: (b, c, n), idx : (m, nsample) containing the indicies of features to group with
+        output: (b, c, m, nsample)
+        """
+        assert features.is_contiguous()
+        assert idx.is_contiguous()
+        b, c, n = features.size()
+        _, m, nsample = idx.size()
+        # output = torch.cuda.FloatTensor(b, c, m, nsample)
+        for i in range(b):
+            features_i = features[i].unsqueeze(0)
+            if i == 0:
+                idx_i = idx[:, :offset[0]]
+            else:
+                idx_i = idx[:, offset[i-1]:offset[i]]
+            m = idx_i.size(1)
+            output_i = torch.cuda.FloatTensor(1, c, m, nsample)
+            pointops_sp_cuda.grouping_forward_cuda(1, c, n, m, nsample, features_i, idx_i, output_i)
+            if i == 0:
+                output = output_i
+            else:
+                output = torch.cat([output, output_i], 2)
+        ctx.for_backwards = (idx, n, offset)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        input: grad_out: (b, c, m, nsample)
+        output: (b, c, n), None
+        """
+        idx, n, offset = ctx.for_backwards
+        b, c, m, nsample = grad_out.size()
+        b = offset.size(0)
+        grad_features = torch.cuda.FloatTensor(b, c, n).zero_()
+        for i in range(b):
+            if i == 0:
+                idx_i = idx[:, :offset[0]]
+                grad_out_i = grad_out[:,:,:offset[0],:]
+            else:
+                idx_i = idx[:, offset[i-1]:offset[i]]
+                grad_out_i = grad_out[:,:,offset[i-1]:offset[i],:]
+            m = grad_out_i.size(2)
+            grad_features_i = torch.cuda.FloatTensor(1, c, n).zero_()
+            grad_out_data = grad_out_i.data.contiguous()
+            pointops_sp_cuda.grouping_backward_cuda(1, c, n, m, nsample, grad_out_data, idx_i, grad_features_i.data)
+            grad_features[i] = grad_features_i
+        # print(1)
+        return grad_features, None, None
+
+grouping_offset = Grouping_offset.apply
 
 
 class GroupingInt(Function):
@@ -525,6 +705,57 @@ class KNNQueryCluster(Function):
 
 knnquerycluster = KNNQueryCluster.apply
 
+class KNNQueryCluster_offset(Function):
+    @staticmethod
+    def forward(ctx, nsample: int, xyz: torch.Tensor, xyz_idx: torch.Tensor, new_xyz: torch.Tensor = None, offset: torch.Tensor = None) -> Tuple[torch.Tensor]:
+        """
+        KNN Indexing
+        input: nsample: int32, Number of neighbor
+               xyz: (b, n, 3) coordinates of the features
+               xyz_idx: (b, n)  index of the coordinates
+               new_xyz: (b, m, 3) centriods
+            output: idx: (b, m, nsample)
+                   ( dist2: (b, m, nsample) )
+        """
+        if new_xyz is None:
+            new_xyz = xyz
+        assert xyz.is_contiguous()
+        assert xyz_idx.is_contiguous()
+        assert new_xyz.is_contiguous()
+        m, _ = new_xyz.size()
+        b = offset.size(0)
+        n = xyz.size(1)
+        # idx = torch.cuda.IntTensor(b, m, nsample).zero_()
+        # idx_abs = torch.cuda.IntTensor(b, m, nsample).zero_()
+        # dist2 = torch.cuda.FloatTensor(b, m, nsample).zero_()
+        for i in range(b):
+            if i == 0:
+                new_xyz_i = new_xyz[:offset[i]].unsqueeze(0)
+            else:
+                new_xyz_i = new_xyz[offset[i-1]:offset[i]].unsqueeze(0)
+            m = new_xyz_i.size(1)
+            idx_i = torch.cuda.IntTensor(1, m, nsample).zero_()
+            idx_abs_i = torch.cuda.IntTensor(1, m, nsample).zero_()
+            dist2_i = torch.cuda.FloatTensor(1, m, nsample).zero_()
+            pointops_sp_cuda.knnquerycluster_cuda(1, n, m, nsample, xyz[i].unsqueeze(0), xyz_idx[i].unsqueeze(0), new_xyz_i, idx_i, idx_abs_i, dist2_i)
+            
+            if i == 0:
+                idx = idx_i
+                idx_abs = idx_abs_i
+            else:
+                idx = torch.cat([idx, idx_i], 1)
+                idx_abs = torch.cat([idx_abs, idx_abs_i], 1)
+            # idx[i] = idx_i
+            # idx_abs[i] = idx_abs_i
+            # dist2[i] = dist2_i
+        return idx, idx_abs
+
+    @staticmethod
+    def backward(ctx, a=None, b=None):
+        return None, None, None, None, None
+
+knnquerycluster_offset = KNNQueryCluster_offset.apply
+
 
 ################################################################
 # ---------   knn query clusters for each point ----------------
@@ -661,6 +892,54 @@ class AssoMatrixPlusLabel(Function):
 
 assomatrixpluslabel = AssoMatrixPlusLabel.apply
 
+class AssoMatrixPlusLabel_offset(Function):
+    @staticmethod
+    def forward(ctx, ks: int, idx_c: torch.Tensor, lab: torch.Tensor, cid: torch.Tensor = None, category=13, offset: torch.Tensor = None) -> Tuple[torch.Tensor]:
+        """
+        KNN Indexing
+        input: ks: int32, Number of cluster neighbors of each point
+               idx_c: (b, n, ks) indexs of cluster
+               lab: (b, n, 1) label of point
+               cid: (b, m, 1) centriods
+        output: idx: (b, m, n)
+                cnt: (b, m, 1)
+                clab: (b, m, classes)
+        """
+        assert idx_c.is_contiguous()
+        assert cid.is_contiguous()
+        b, m, _ = cid.size()
+        n = idx_c.size(1)
+        # print('category: {}'.format(category))
+        # idx = torch.cuda.IntTensor(b, m, n).zero_()
+        cnt = torch.cuda.IntTensor(b, m, 1).zero_()
+        clab = torch.cuda.IntTensor(b, m, category).zero_()
+        for i in range(b):
+            if i == 0:
+                idx_c_i = idx_c[:, :offset[i]]
+                lab_i = lab[:offset[i]].unsqueeze(0)
+            else:
+                idx_c_i = idx_c[:, offset[i-1]:offset[i]]
+                lab_i = lab[offset[i-1]:offset[i]].unsqueeze(0)
+            n = idx_c_i.size(1)
+            idx_i = torch.cuda.IntTensor(1, m, n).zero_()
+            cnt_i = torch.cuda.IntTensor(1, m, 1).zero_()
+            clab_i = torch.cuda.IntTensor(1, m, category).zero_()
+            cid_i = cid[i].unsqueeze(0)
+            pointops_sp_cuda.assomatrix_label_cuda(1, n, m, ks, category, idx_c_i, lab_i, cid_i, idx_i, cnt_i, clab_i)
+            if i == 0:
+                idx = idx_i
+            else:
+                idx = torch.cat([idx, idx_i], 2)
+            cnt[i] = cnt_i
+            clab[i] = clab_i
+        return idx, cnt, clab
+
+    @staticmethod
+    def backward(ctx, a=None, b=None):
+        return None, None, None, None, None, None
+
+assomatrixpluslabel_offset = AssoMatrixPlusLabel_offset.apply
+
 ################################################################
 # ---------   association matrix for each cluster ----------------
 ################################################################
@@ -690,6 +969,49 @@ class AssoMatrixFloat(Function):
         return None, None, None, None
 
 assomatrixfloat = AssoMatrixFloat.apply
+
+class AssoMatrixFloat_offset(Function):
+    @staticmethod
+    def forward(ctx, ks: int, val_c: torch.Tensor, idx_c: torch.Tensor, cid: torch.Tensor = None, offset: torch.Tensor = None) -> Tuple[torch.Tensor]:
+        """
+        KNN Indexing
+        input: ks: int32, Number of cluster neighbors of each point
+               idx_c: (n, ks) indexs of cluster
+               cid: (b, m, 1) centriods
+        output: idx: (b, m, n)
+                cnt: (b, m, 1)
+        """
+        assert val_c.is_contiguous()
+        assert idx_c.is_contiguous()
+        assert cid.is_contiguous()
+        b, m, _ = cid.size()
+        n = idx_c.size(1)
+        # idx = torch.cuda.FloatTensor(b, m, n).zero_()
+        cnt = torch.cuda.IntTensor(b, m, 1).zero_()
+        for i in range(b):
+            cid_i = cid[i].unsqueeze(0)
+            if i == 0:
+                idx_c_i = idx_c[:, :offset[0]]
+                val_c_i = val_c[:offset[0]].unsqueeze(0)
+            else:
+                idx_c_i = idx_c[:, offset[i-1]:offset[i]]
+                val_c_i = val_c[offset[i-1]:offset[i]].unsqueeze(0)
+            n = idx_c_i.size(1)
+            idx_i = torch.cuda.FloatTensor(1, m, n).zero_()
+            cnt_i = torch.cuda.IntTensor(1, m, 1).zero_()
+            pointops_sp_cuda.assomatrix_float_cuda(1, n, m, ks, val_c_i, idx_c_i, cid_i, idx_i, cnt_i)
+            cnt[i] = cnt_i
+            if i == 0:
+                idx = idx_i
+            else:
+                idx = torch.cat([idx, idx_i], 2)
+        return idx, cnt
+
+    @staticmethod
+    def backward(ctx, a=None, b=None):
+        return None, None, None, None, None
+
+assomatrixfloat_offset = AssoMatrixFloat_offset.apply
 
 
 ################################################################

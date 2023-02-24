@@ -1,3 +1,7 @@
+'''
+构建新数据集, 添加点之间mesh相邻边关系
+'''
+
 from multiprocessing import Pool
 import os
 import numpy as np
