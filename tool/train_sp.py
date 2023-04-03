@@ -29,6 +29,7 @@ from util.data_util import collate_fn, collate_fn_limit
 from util import transform as t
 from util.logger import get_logger
 from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou
+from util.sp_util import get_components, partition2ply
 from functools import partial
 from util.lr import MultiStepWithWarmup, PolyLR
 
@@ -238,7 +239,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler_state_dict = checkpoint['scheduler']
             #best_iou = 40.0
-            best_iou = checkpoint['best_iou']
+            # best_iou = checkpoint['best_iou']
             if main_process():
                 logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
         else:
@@ -398,6 +399,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     loss_re_xyz_meter = AverageMeter()
     loss_re_label_meter = AverageMeter()
     loss_re_sp_meter = AverageMeter()
+    loss_norm_meter = AverageMeter()
     loss_meter = AverageMeter()
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
@@ -412,7 +414,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     max_iter = args.epochs * len(train_loader)
     print('$'*10)
 
-    for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
+    for i, (coord, normals, boundary, label, semantic, param, offset, edges, filename) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
         coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
@@ -429,7 +431,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
             onehot_label = label2one_hot(semantic, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot = model([coord, normals, offset], onehot_label, semantic) # superpoint
+            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss = model([coord, normals, offset], onehot_label, semantic) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
@@ -449,7 +451,24 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             elif args['re_sp_loss'] == 'mse':
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
 
-            loss = re_xyz_loss + re_label_loss + re_sp_loss
+            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
+            loss = re_xyz_loss + normal_loss
+
+        # for j in range(offset.shape[0]):
+        #     init_center = c_idx[j, :].cpu().numpy()
+        #     filename_ = filename[j]
+        #     if j == 0:
+        #         xyz = coord[:offset[0]].cpu().numpy()
+        #         spout_ = spout[:offset[0]].detach().cpu().numpy()
+        #         pt_center_index = c2p_idx_base[:, :offset[0]].squeeze(0).cpu().numpy()
+        #     else:
+        #         xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
+        #         spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
+        #         pt_center_index = c2p_idx_base[:, offset[j-1]:offset[j]].squeeze(0).cpu().numpy()
+        #     pred_components, pred_in_component = get_components(init_center, pt_center_index, spout_, getmax=True)
+        #     # time_tag = time.strftime("%Y%m%d-%H%M%S")
+        #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_norm_dis_vis/{}.ply'.format(filename_)
+        #     partition2ply(root_name, xyz, pred_components)
 
             
         optimizer.zero_grad()
@@ -485,6 +504,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         loss_re_xyz_meter.update(re_xyz_loss.item(), n)
         loss_re_label_meter.update(re_label_loss.item(), n)
         loss_re_sp_meter.update(re_sp_loss.item(), n)
+        loss_norm_meter.update(normal_loss.item(), n)
         loss_meter.update(loss.item(), n)
         
         # # All Reduce loss
@@ -542,6 +562,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                         'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
                         'LS_re_label {loss_re_label_meter.val:.4f} '
                         'LS_re_sp {loss_re_sp_meter.val:.4f} '
+                        'LS_norm {loss_norm_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '
                         'lr {lr} '
                         'Accuracy {accuracy:.4f}.'.format(epoch+1, args["epochs"], i + 1, len(train_loader),
@@ -550,6 +571,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                                                           loss_re_xyz_meter=loss_re_xyz_meter,
                                                           loss_re_label_meter=loss_re_label_meter,
                                                           loss_re_sp_meter=loss_re_sp_meter,
+                                                          loss_norm_meter=loss_norm_meter,
                                                           loss_meter=loss_meter,
                                                           lr=lr,
                                                           accuracy=accuracy))

@@ -157,8 +157,8 @@ __global__ void furthestsampling_cuda_kernel(int b, int n, int m, const float *d
     __shared__ float dists[block_size];
     __shared__ int dists_i[block_size];
 
-    int batch_index = blockIdx.x;
-    dataset += batch_index * n * 3;
+    int batch_index = blockIdx.x;   // b
+    dataset += batch_index * n * 3; //找到batch的起始位置
     temp += batch_index * n;
     idxs += batch_index * m;
     int tid = threadIdx.x;

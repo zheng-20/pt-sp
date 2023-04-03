@@ -26,3 +26,4 @@ point_transformer/models/test.py
 outputs/
 .vscode
 .DS_Store
+visual

@@ -24,7 +24,7 @@ def sa_create(name, var):
 #     return torch.cat(coord), torch.cat(feat), torch.cat(label), torch.IntTensor(offset)
 
 def collate_fn(batch):
-    coord, normals, boundary, label, semantic, param, F, edges = list(zip(*batch))
+    coord, normals, boundary, label, semantic, param, F, edges, filename = list(zip(*batch))
     offset, count = [], 0
     # print("coord:", len(coord))
     for item in coord:
@@ -37,7 +37,7 @@ def collate_fn(batch):
     #     # print("item shape:",item.shape)
     #     count += item.shape[0]
     #     F_offset.append(count)
-    return torch.cat(coord), torch.cat(normals), torch.cat(boundary), torch.cat(label), torch.cat(semantic), torch.cat(param), torch.IntTensor(offset), torch.cat(edges)
+    return torch.cat(coord), torch.cat(normals), torch.cat(boundary), torch.cat(label), torch.cat(semantic), torch.cat(param), torch.IntTensor(offset), torch.cat(edges), filename
 
 def collate_fn_limit(batch, max_batch_points, logger):
     coord, normals, boundary, label, semantic, param, F = list(zip(*batch))

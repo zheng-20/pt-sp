@@ -54,7 +54,7 @@ class ABC_Dataset(Dataset):
         # coord, feat, label = data[:, 0:3], data[:, 3:6], data[:, 6]
         # coord, feat, label = data_prepare(coord, feat, label, self.split, self.voxel_size, self.voxel_max, self.transform, self.shuffle_index)
 
-        return coord, normals, boundary, label, semantic, param, F, edges
+        return coord, normals, boundary, label, semantic, param, F, edges, item[:8]
 
     def __len__(self):
         return round(len(self.data_idx) * self.loop)

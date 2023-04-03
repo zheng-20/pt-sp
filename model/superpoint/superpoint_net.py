@@ -11,7 +11,8 @@ sys.path.append(os.path.join(BASE_DIR, '../'))
 from lib.pointops.functions import pointops
 from lib.boundaryops.functions import boundaryops
 from lib.pointops_sp.functions import pointops_sp
-from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea
+from lib.pointops_sp_v2.functions import pointops_sp_v2
+from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, point_normal_similarity_loss, calc_sp_normal
 
 
 class PointTransformerLayer(nn.Module):
@@ -956,23 +957,32 @@ class SuperPointNet(nn.Module):
 
         # number of clusters for FPS
         num_clusters = 40
+        n_o, count = [int(o0[0].item() * 0.008)], int(o0[0].item() * 0.008)
+        for i in range(1, o0.shape[0]):
+            count += int((o0[i].item() - o0[i-1].item()) * 0.008)
+            n_o.append(count)
+        n_o = torch.cuda.IntTensor(n_o) # 以0.008倍的比例进行采样
 
         # calculate idx of superpoints and points
         cluster_idx = pointops_sp.furthestsampling_offset(p0, o0, num_clusters)
         # cluster_idx: b × m
+        # cluster_idx = pointops.furthestsampling(p0, o0, n_o)    # m
         cluster_xyz = pointops_sp.gathering_offset(p0.transpose(0, 1).contiguous(), o0, cluster_idx).transpose(1, 2).contiguous()
         # cluster_xyz: b × m × 3
+        # cluster_xyz = pointops_sp_v2.gathering(p0.transpose(0, 1).contiguous(), cluster_idx).transpose(0, 1).contiguous()
 
 
         # c2p_idx: near clusters to each point
         # (b x m x 3, b x m, n x 3) -> b x n x nc2p, b x n x nc2p
         # nc2p == 6
         c2p_idx, c2p_idx_abs = pointops_sp.knnquerycluster_offset(6, cluster_xyz, cluster_idx, p0, o0)
+        # c2p_idx, c2p_idx_abs = pointops_sp_v2.knnquerycluster(6, cluster_xyz, cluster_idx, p0, o0, n_o)
         # c2p_idx: n x 6 与每个点最近的nc2p个超点中心索引(基于n)
         # c2p_idx_abs: n x 6 与每个点最近的nc2p个超点中心索引(基于m)
 
         # association matrix
         asso_matrix, sp_nei_cnt, sp_lab = pointops_sp.assomatrixpluslabel_offset(6, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes, o0)
+        # asso_matrix, sp_nei_cnt, sp_lab = pointops_sp_v2.assomatrixpluslabel(6, o0, n_o, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes)
         asso_matrix = asso_matrix.float()
         sp_nei_cnt = sp_nei_cnt.float()
         # asso_matrix: b x m x n 点与超点中心关联矩阵
@@ -1018,6 +1028,10 @@ class SuperPointNet(nn.Module):
             # onehot_label: b x classes x n
             sp_label = calc_sp_fea(final_asso, onehot_label.transpose(1, 2).contiguous(), 6, c2p_idx, cluster_idx, o0)
             # sp_label: b x m x classes
+
+            # ------------------------------ reconstruct normal ----------------------------
+            normal = pxo[1].unsqueeze(0)
+            sp_normal = calc_sp_fea(final_asso, normal, 6, c2p_idx, cluster_idx, o0)
             
             sp_pseudo_lab = torch.argmax(sp_lab, dim=2, keepdim=False)  # b x m
             sp_pseudo_lab_onehot = self.label2one_hot(sp_pseudo_lab, self.classes)    # b x class x m
@@ -1031,14 +1045,40 @@ class SuperPointNet(nn.Module):
             # (b, classes, m), (b, n, 6) -> b x classes x n x 6
             c2p_label = pointops_sp.grouping_offset(sp_label.transpose(1, 2).contiguous(), c2p_idx_abs, o0)
             # (b, classes, m), (b, n, 6) -> b x classes x n x 6
+
+            c2p_normal = pointops_sp.grouping_offset(sp_normal.transpose(1, 2).contiguous(), c2p_idx_abs, o0)
+            re_p_normal = torch.sum(c2p_normal * final_asso.unsqueeze(0).unsqueeze(1), dim=-1, keepdim=False)
             
             re_p_label = torch.sum(c2p_label * final_asso.unsqueeze(0).unsqueeze(1), dim=-1, keepdim=False)
             # re_p_label: b x classes x n
+
+            # ------------------------------ reconstruct normal ----------------------------
+            normals = pxo[1]
+            # normal_loss = point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, o0)
+            # distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
+            # normal_loss = (1 - distance_weight * torch.sum(normals * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            normal_loss = (1 - torch.sum(normals * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+
+            # normal_loss = normal_loss * distance_weight # 添加距离权重，距离越远，权重越小
         else:
             re_p_xyz = None
             re_p_label = None
 
-        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot
+        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+        '''
+        final_asso: b*n*6 点与最近6个超点中心关联矩阵
+        cluster_idx: b*m 超点中心索引(基于n)
+        c2p_idx: b*n*6 每点最近超点中心索引(基于n)
+        c2p_idx_abs: b*n*6 每点最近超点中心索引(基于m)
+        out: b*classes*n 每点语义类别得分, 用于语义类别loss
+        re_p_xyz: b x 3 x n 每个点最近的超点中心坐标, 用于compact loss
+        re_p_label: b*classes*n 重建每点的label vector, 用于point label loss
+        fea_dist: b*n*6
+        p_fea: b*n*64 每点特征
+        sp_label: b*m*13 根据关联矩阵生成超点中心的加权label向量, 用于superpoint label loss
+        sp_pseudo_lab: b*m 超点中心伪标签, 投票生成
+        sp_pseudo_lab_onehot: b*classes*m 超点中心伪标签,独热向量, 用于superpoint label loss
+        '''
 
 
 def superpoint_seg_repro(**kwargs):
