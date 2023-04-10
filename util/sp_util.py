@@ -45,6 +45,7 @@ def get_components(init_center,pt_center_index,asso, getmax=False, trick=False, 
     else:
         asso=asso.argmin(axis=1).reshape(-1,1)
     components=[]
+    center_com = []
 
     
     in_component=np.take_along_axis(pt_center_index,asso,1).reshape(-1)
@@ -60,12 +61,14 @@ def get_components(init_center,pt_center_index,asso, getmax=False, trick=False, 
     for i in range(len(coms)):
         #te=[]
         te=np.where(in_component==coms[i])
+        center = np.array(coms[i])
         in_component[te] = i
         components.append(te)
+        center_com.append(center)   # center of each component
         
     # real_center=np.array(real_center,dtype=np.int64)
     # real_center=torch.from_numpy(real_center).cuda()
     # print(len(components))
     #logger.info('len components: {}'.format(len(components)))
     #logger.info('len in_component: {}'.format(len(in_component)))
-    return components,in_component
+    return components,in_component,center_com

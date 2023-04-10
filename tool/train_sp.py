@@ -431,7 +431,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
             onehot_label = label2one_hot(semantic, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss = model([coord, normals, offset], onehot_label, semantic) # superpoint
+            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_offset = model([coord, normals, offset], onehot_label, semantic) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
@@ -440,9 +440,11 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # type_loss = criterion(type_per_point, semantic)
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
-            re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz.squeeze(0), coord.transpose(0,1).contiguous())    # compact loss
+            # re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz.squeeze(0), coord.transpose(0,1).contiguous())    # compact loss
+            re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
             if args['re_label_loss'] == 'cel':
-                re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
+                # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
+                re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label.transpose(0,1).contiguous(), semantic) # point label loss
             elif args['re_label_loss'] == 'mse':
                 re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, onehot_label)
 
@@ -451,8 +453,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             elif args['re_sp_loss'] == 'mse':
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
 
-            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
-            loss = re_xyz_loss + normal_loss
+            loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
+            # loss = re_xyz_loss + normal_loss
 
         # for j in range(offset.shape[0]):
         #     init_center = c_idx[j, :].cpu().numpy()
@@ -465,10 +467,28 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         #         xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
         #         spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
         #         pt_center_index = c2p_idx_base[:, offset[j-1]:offset[j]].squeeze(0).cpu().numpy()
-        #     pred_components, pred_in_component = get_components(init_center, pt_center_index, spout_, getmax=True)
+        #     pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
         #     # time_tag = time.strftime("%Y%m%d-%H%M%S")
-        #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_norm_dis_vis/{}.ply'.format(filename_)
+        #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_vis/{}.ply'.format(filename_)
         #     partition2ply(root_name, xyz, pred_components)
+
+        for j in range(offset.shape[0]):
+            init_center = c_idx.cpu().numpy()
+            filename_ = filename[j]
+            if j == 0:
+                # init_center = c_idx[:sp_offset[0]].cpu().numpy()
+                xyz = coord[:offset[0]].cpu().numpy()
+                spout_ = spout[:offset[0]].detach().cpu().numpy()
+                pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
+            else:
+                # init_center = c_idx[sp_offset[j-1]:sp_offset[j]].cpu().numpy()
+                xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
+                spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
+                pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
+            pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
+            # time_tag = time.strftime("%Y%m%d-%H%M%S")
+            root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_vis_1.0/{}.ply'.format(filename_)
+            partition2ply(root_name, xyz, pred_components)
 
             
         optimizer.zero_grad()

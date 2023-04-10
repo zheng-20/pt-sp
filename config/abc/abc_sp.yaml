@@ -6,7 +6,7 @@ DATA:
   fea_dim: 6
   voxel_size: 0.005
   voxel_max: 80000
-  train_loop: 1
+  train_loop: 2
   val_loop: 0.02
 
 TRAIN:
@@ -39,7 +39,7 @@ TRAIN:
   re_xyz_loss: 'mse'
   re_label_loss: 'cel'
   re_sp_loss: 'cel'
-  w_re_xyz_loss: 0.1
+  w_re_xyz_loss: 1.0
   w_re_label_loss: 1.0
   w_re_sp_loss: 1.0
 
@@ -56,9 +56,9 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [0]
+  train_gpu: [1]
   workers: 16  # data loader workers
-  batch_size: 2  # batch size for training
+  batch_size: 14  # batch size for training
   batch_size_val: 6  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
   epochs: 5000

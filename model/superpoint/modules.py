@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 
 from lib.pointops_sp.functions import pointops_sp
+from lib.pointops_sp_v2.functions import pointops_sp_v2
 import torch.nn.functional as F
 
 class learn_SLIC_calc_v1_new(nn.Module):
@@ -119,7 +120,7 @@ class learn_SLIC_calc_v2(nn.Module):
         self.mlp = nn.Sequential(nn.Linear(ch_mlp[0], ch_mlp[1]), nn.BatchNorm1d(ch_mlp[1]), nn.ReLU(inplace=True), nn.Linear(ch_mlp[1], ch_mlp[2]))
 
     
-    def forward(self, sp_fea, sp_xyz, o_p_fea, p_xyz, c2p_idx_abs, c2p_idx, cluster_idx, offset):
+    def forward(self, sp_fea, sp_xyz, o_p_fea, p_xyz, c2p_idx_abs, c2p_idx, cluster_idx, offset, sp_offset):
         # sp_fea: b x m x c
         # sp_xyz: b x m x 3
         # o_p_fea: n x c
@@ -129,10 +130,12 @@ class learn_SLIC_calc_v2(nn.Module):
         # bs = offset.size(0)
         n, nc2p = c2p_idx_abs.size()
 
-        c2p_fea = pointops_sp.grouping_offset(sp_fea.transpose(1, 2).contiguous(), c2p_idx_abs, offset).squeeze(0) - o_p_fea.transpose(0, 1).contiguous().unsqueeze(-1).repeat(1, 1, nc2p)
+        # c2p_fea = pointops_sp.grouping_offset(sp_fea.transpose(1, 2).contiguous(), c2p_idx_abs, offset).squeeze(0) - o_p_fea.transpose(0, 1).contiguous().unsqueeze(-1).repeat(1, 1, nc2p)
+        c2p_fea = pointops_sp_v2.grouping(sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs) - o_p_fea.transpose(0, 1).contiguous().unsqueeze(-1).repeat(1, 1, nc2p)
         # c2p_fea: c x n x nc2p 距离每点最近的6个超点特征
         
-        c2p_xyz = pointops_sp.grouping_offset(sp_xyz.transpose(1, 2).contiguous(), c2p_idx_abs, offset).squeeze(0) - p_xyz.transpose(0, 1).contiguous().unsqueeze(-1).repeat(1, 1, nc2p)
+        # c2p_xyz = pointops_sp.grouping_offset(sp_xyz.transpose(1, 2).contiguous(), c2p_idx_abs, offset).squeeze(0) - p_xyz.transpose(0, 1).contiguous().unsqueeze(-1).repeat(1, 1, nc2p)
+        c2p_xyz = pointops_sp_v2.grouping(sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs) - p_xyz.transpose(0, 1).contiguous().unsqueeze(-1).repeat(1, 1, nc2p)
         # c2p_xyz: 3 x n x nc2p 距离每点最近的6个超点坐标
 
         p_fea = self.mlp(o_p_fea)    # n x 16
@@ -160,31 +163,32 @@ class learn_SLIC_calc_v2(nn.Module):
         if self.use_softmax:
             bi_w = F.softmax(bi_w, dim=-1)  # n x nc2p
 
-        f, sp_nei_cnt = pointops_sp.assomatrixfloat_offset(nc2p, bi_w, c2p_idx, cluster_idx.unsqueeze(-1), offset)
+        # f, sp_nei_cnt = pointops_sp.assomatrixfloat_offset(nc2p, bi_w, c2p_idx, cluster_idx.unsqueeze(-1), offset)
+        f, sp_nei_cnt = pointops_sp_v2.assomatrixfloat(nc2p, offset, sp_offset, bi_w, c2p_idx, cluster_idx.unsqueeze(-1))
         # f: b x m x n 点与超点中心关联矩阵
         # sp_nei_cnt: b x m x 1 每个超点所包含点数
 
-        # sp_sum = f.sum(dim=2, keepdim=True)                 # b x m x 1
-        # sp_fea = torch.matmul(f, o_p_fea) / (sp_sum+1e-8)   # (b, m, n) X (b, n, c) -> (b, m, c)
+        sp_sum = f.sum(dim=1, keepdim=True)                 # b x m x 1
+        sp_fea = torch.matmul(f, o_p_fea) / (sp_sum+1e-8)   # (b, m, n) X (b, n, c) -> (b, m, c)
         
-        # sp_xyz = torch.matmul(f, p_xyz) / (sp_sum+1e-8)     # (b, m, n) X (b, n, 3) -> (b, m, 3)
-        for i in range(offset.size(0)):
-            if i == 0:
-                f_i = f[:, :, :offset[0]]
-                sp_sum_i = f_i.sum(dim=2, keepdim=True)
-                o_p_fea_i = o_p_fea[:offset[0]]
-                p_xyz_i = p_xyz[:offset[0]]
-                sp_fea = torch.matmul(f_i, o_p_fea_i) / (sp_sum_i+1e-8)
-                sp_xyz = torch.matmul(f_i, p_xyz_i) / (sp_sum_i+1e-8)
-            else:
-                f_i = f[:, :, offset[i-1]:offset[i]]
-                sp_sum_i = f_i.sum(dim=2, keepdim=True)
-                o_p_fea_i = o_p_fea[offset[i-1]:offset[i]]
-                p_xyz_i = p_xyz[offset[i-1]:offset[i]]
-                sp_fea_i = torch.matmul(f_i, o_p_fea_i) / (sp_sum_i+1e-8)
-                sp_xyz_i = torch.matmul(f_i, p_xyz_i) / (sp_sum_i+1e-8)
-                sp_fea = torch.cat([sp_fea, sp_fea_i], 0)   # (b, m, c)
-                sp_xyz = torch.cat([sp_xyz, sp_xyz_i], 0)   # (b, m, 3)
+        sp_xyz = torch.matmul(f, p_xyz) / (sp_sum+1e-8)     # (b, m, n) X (b, n, 3) -> (b, m, 3)
+        # for i in range(offset.size(0)):
+        #     if i == 0:
+        #         f_i = f[:, :, :offset[0]]
+        #         sp_sum_i = f_i.sum(dim=2, keepdim=True)
+        #         o_p_fea_i = o_p_fea[:offset[0]]
+        #         p_xyz_i = p_xyz[:offset[0]]
+        #         sp_fea = torch.matmul(f_i, o_p_fea_i) / (sp_sum_i+1e-8)
+        #         sp_xyz = torch.matmul(f_i, p_xyz_i) / (sp_sum_i+1e-8)
+        #     else:
+        #         f_i = f[:, :, offset[i-1]:offset[i]]
+        #         sp_sum_i = f_i.sum(dim=2, keepdim=True)
+        #         o_p_fea_i = o_p_fea[offset[i-1]:offset[i]]
+        #         p_xyz_i = p_xyz[offset[i-1]:offset[i]]
+        #         sp_fea_i = torch.matmul(f_i, o_p_fea_i) / (sp_sum_i+1e-8)
+        #         sp_xyz_i = torch.matmul(f_i, p_xyz_i) / (sp_sum_i+1e-8)
+        #         sp_fea = torch.cat([sp_fea, sp_fea_i], 0)   # (b, m, c)
+        #         sp_xyz = torch.cat([sp_xyz, sp_xyz_i], 0)   # (b, m, 3)
 
         if self.last:
             return bi_w, sp_fea, sp_xyz
@@ -236,6 +240,33 @@ def calc_sp_fea(pt_asso, p_fea, nc2p, c2p_idx, cluster_idx, offset):
             p_fea_i = p_fea[:, offset[i-1]:offset[i]]
             sp_fea_i = torch.matmul(f_i, p_fea_i) / (sp_sum_i+1e-8)
             sp_fea = torch.cat([sp_fea, sp_fea_i], 0)   # (b, m, c)
+
+    return sp_fea   # b x m x c
+
+
+def calc_sp_fea_v2(pt_asso, p_fea, nc2p, c2p_idx, cluster_idx, offset, sp_offset):
+    # pt_center_index: b x n x 6
+    # pt_asso: b x n x 6 
+    # p_fea: b x n x c
+    # num: m
+    
+    # b x m x n
+    f, sp_nei_cnt = pointops_sp_v2.assomatrixfloat(nc2p, offset, sp_offset, pt_asso, c2p_idx, cluster_idx.unsqueeze(-1))
+
+    sp_sum = f.sum(dim=1, keepdim=True)                 # b x m x 1
+    sp_fea = torch.matmul(f, p_fea) / (sp_sum+1e-8)     # (b x m x n) X (b x n x c) -> (b x m x c) 
+    # for i in range(offset.size(0)):
+    #     if i == 0:
+    #         f_i = f[:, :, :offset[0]]
+    #         sp_sum_i = f_i.sum(dim=2, keepdim=True)
+    #         p_fea_i = p_fea[:, :offset[0]]
+    #         sp_fea = torch.matmul(f_i, p_fea_i) / (sp_sum_i+1e-8)
+    #     else:
+    #         f_i = f[:, :, offset[i-1]:offset[i]]
+    #         sp_sum_i = f_i.sum(dim=2, keepdim=True)
+    #         p_fea_i = p_fea[:, offset[i-1]:offset[i]]
+    #         sp_fea_i = torch.matmul(f_i, p_fea_i) / (sp_sum_i+1e-8)
+    #         sp_fea = torch.cat([sp_fea, sp_fea_i], 0)   # (b, m, c)
 
     return sp_fea   # b x m x c
 

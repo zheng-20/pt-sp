@@ -66,7 +66,7 @@ class KNNQueryCluster(Function):
 
     @staticmethod
     def backward(ctx, a=None, b=None):
-        return None, None, None, None
+        return None, None, None, None, None, None
 
 knnquerycluster = KNNQueryCluster.apply
 
@@ -101,38 +101,103 @@ class AssoMatrixPlusLabel(Function):
 
     @staticmethod
     def backward(ctx, a=None, b=None):
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
 assomatrixpluslabel = AssoMatrixPlusLabel.apply
+
+
+################################################################
+# ---------   association matrix for each cluster ----------------
+################################################################
+class AssoMatrixFloat(Function):
+    @staticmethod
+    def forward(ctx, ks: int, offset: torch.Tensor, sp_offset: torch.Tensor, val_c: torch.Tensor, idx_c: torch.Tensor, cid: torch.Tensor = None) -> Tuple[torch.Tensor]:
+        """
+        KNN Indexing
+        input: ks: int32, Number of cluster neighbors of each point
+               offset: (b) offset of each batch
+               sp_offset: (b) offset of each superpoint
+               val_c: (n, ks) value of cluster
+               idx_c: (n, ks) indexs of cluster
+               cid: (m, 1) centriods
+        output: idx: (m, n)
+                cnt: (m, 1)
+        """
+        assert val_c.is_contiguous()
+        assert idx_c.is_contiguous()
+        assert cid.is_contiguous()
+        m, _ = cid.size()
+        n = idx_c.size(0)
+        idx = torch.cuda.FloatTensor(m, n).zero_()
+        cnt = torch.cuda.IntTensor(m, 1).zero_()
+        pointops_sp_v2_cuda.assomatrix_float_cuda(n, m, ks, offset, sp_offset, val_c, idx_c, cid, idx, cnt)
+        return idx, cnt
+
+    @staticmethod
+    def backward(ctx, a=None, b=None):
+        return None, None, None, None, None, None
+
+assomatrixfloat = AssoMatrixFloat.apply
 
 
 class Grouping(Function):
     @staticmethod
     def forward(ctx, features: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         """
-        input: features: (b, c, n), idx : (b, m, nsample) containing the indicies of features to group with
-        output: (b, c, m, nsample)
+        input: features: (c, n), idx : (m, nsample) containing the indicies of features to group with
+        output: (c, m, nsample)
         """
         assert features.is_contiguous()
         assert idx.is_contiguous()
-        b, c, n = features.size()
-        _, m, nsample = idx.size()
-        output = torch.cuda.FloatTensor(b, c, m, nsample)
-        pointops_sp_v2_cuda.grouping_forward_cuda(b, c, n, m, nsample, features, idx, output)
+        c, n = features.size()
+        m, nsample = idx.size()
+        output = torch.cuda.FloatTensor(c, m, nsample)
+        pointops_sp_v2_cuda.grouping_forward_cuda(c, n, m, nsample, features, idx, output)
         ctx.for_backwards = (idx, n)
         return output
 
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        input: grad_out: (b, c, m, nsample)
-        output: (b, c, n), None
+        input: grad_out: (c, m, nsample)
+        output: (c, n), None
         """
         idx, n = ctx.for_backwards
-        b, c, m, nsample = grad_out.size()
-        grad_features = torch.cuda.FloatTensor(b, c, n).zero_()
+        c, m, nsample = grad_out.size()
+        grad_features = torch.cuda.FloatTensor(c, n).zero_()
         grad_out_data = grad_out.data.contiguous()
-        pointops_sp_v2_cuda.grouping_backward_cuda(b, c, n, m, nsample, grad_out_data, idx, grad_features.data)
+        pointops_sp_v2_cuda.grouping_backward_cuda(c, n, m, nsample, grad_out_data, idx, grad_features.data)
         return grad_features, None
 
 grouping = Grouping.apply
+
+
+class Gathering_Cluster(Function):
+    @staticmethod
+    def forward(ctx, features, idx, idx_3d):
+        """
+        input: features: (c, n), idx : (m) tensor, idx_3d: (m, k)
+        output: (c, m)
+        """
+        assert features.is_contiguous()
+        assert idx.is_contiguous()
+        assert idx_3d.is_contiguous()
+        c, n = features.size()
+        m = idx.size(0)
+        k = idx_3d.size(1)
+        output = torch.cuda.FloatTensor(c, m)
+        pointops_sp_v2_cuda.gathering_cluster_forward_cuda(c, n, m, k, features, idx, idx_3d, output)
+        ctx.for_backwards = (idx, idx_3d, c, n)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        idx, idx_3d, c, n = ctx.for_backwards
+        m = idx.size(0)
+        k = idx_3d.size(1)
+        grad_features = torch.cuda.FloatTensor(c, n).zero_()
+        grad_out_data = grad_out.data.contiguous()
+        pointops_sp_v2_cuda.gathering_cluster_backward_cuda(c, n, m, k, grad_out_data, idx, idx_3d, grad_features.data)
+        return grad_features, None, None
+
+gathering_cluster = Gathering_Cluster.apply

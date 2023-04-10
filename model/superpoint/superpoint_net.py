@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import open3d as o3d
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
@@ -12,7 +13,7 @@ from lib.pointops.functions import pointops
 from lib.boundaryops.functions import boundaryops
 from lib.pointops_sp.functions import pointops_sp
 from lib.pointops_sp_v2.functions import pointops_sp_v2
-from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, point_normal_similarity_loss, calc_sp_normal
+from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, point_normal_similarity_loss, calc_sp_normal, learn_SLIC_calc_v2, calc_sp_fea_v2
 
 
 class PointTransformerLayer(nn.Module):
@@ -903,16 +904,28 @@ class SuperPointNet(nn.Module):
         self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
         self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
 
-        self.learn_SLIC_calc_1 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        # self.learn_SLIC_calc_1 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+
+        # self.learn_SLIC_calc_2 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+
+        # self.learn_SLIC_calc_3 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+
+        # self.learn_SLIC_calc_4 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        self.learn_SLIC_calc_1 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        self.learn_SLIC_calc_2 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        self.learn_SLIC_calc_2 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        self.learn_SLIC_calc_3 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        self.learn_SLIC_calc_3 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        self.learn_SLIC_calc_4 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        self.learn_SLIC_calc_4 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
     def _make_enc(self, block, planes, blocks, share_planes=8, stride=1, nsample=16):
@@ -935,6 +948,13 @@ class SuperPointNet(nn.Module):
         b, n = labels.shape
         labels = torch.unsqueeze(labels, dim=1)
         one_hot = torch.zeros(b, C, n, dtype=torch.long).cuda()         # create black
+        target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
+        return target.type(torch.float32)
+    
+    def label2one_hot_v2(self, labels, C=10):
+        n = labels.size(0)
+        labels = torch.unsqueeze(labels, dim=0).unsqueeze(0)
+        one_hot = torch.zeros(1, C, n, dtype=torch.long).cuda()         # create black
         target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
         return target.type(torch.float32)
 
@@ -964,25 +984,25 @@ class SuperPointNet(nn.Module):
         n_o = torch.cuda.IntTensor(n_o) # 以0.008倍的比例进行采样
 
         # calculate idx of superpoints and points
-        cluster_idx = pointops_sp.furthestsampling_offset(p0, o0, num_clusters)
+        # cluster_idx = pointops_sp.furthestsampling_offset(p0, o0, num_clusters)
         # cluster_idx: b × m
-        # cluster_idx = pointops.furthestsampling(p0, o0, n_o)    # m
-        cluster_xyz = pointops_sp.gathering_offset(p0.transpose(0, 1).contiguous(), o0, cluster_idx).transpose(1, 2).contiguous()
+        cluster_idx = pointops.furthestsampling(p0, o0, n_o)    # m
+        # cluster_xyz = pointops_sp.gathering_offset(p0.transpose(0, 1).contiguous(), o0, cluster_idx).transpose(1, 2).contiguous()
         # cluster_xyz: b × m × 3
-        # cluster_xyz = pointops_sp_v2.gathering(p0.transpose(0, 1).contiguous(), cluster_idx).transpose(0, 1).contiguous()
+        cluster_xyz = pointops_sp_v2.gathering(p0.transpose(0, 1).contiguous(), cluster_idx).transpose(0, 1).contiguous()
 
 
         # c2p_idx: near clusters to each point
         # (b x m x 3, b x m, n x 3) -> b x n x nc2p, b x n x nc2p
         # nc2p == 6
-        c2p_idx, c2p_idx_abs = pointops_sp.knnquerycluster_offset(6, cluster_xyz, cluster_idx, p0, o0)
-        # c2p_idx, c2p_idx_abs = pointops_sp_v2.knnquerycluster(6, cluster_xyz, cluster_idx, p0, o0, n_o)
+        # c2p_idx, c2p_idx_abs = pointops_sp.knnquerycluster_offset(6, cluster_xyz, cluster_idx, p0, o0)
+        c2p_idx, c2p_idx_abs = pointops_sp_v2.knnquerycluster(6, cluster_xyz, cluster_idx, p0, o0, n_o)
         # c2p_idx: n x 6 与每个点最近的nc2p个超点中心索引(基于n)
         # c2p_idx_abs: n x 6 与每个点最近的nc2p个超点中心索引(基于m)
 
         # association matrix
-        asso_matrix, sp_nei_cnt, sp_lab = pointops_sp.assomatrixpluslabel_offset(6, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes, o0)
-        # asso_matrix, sp_nei_cnt, sp_lab = pointops_sp_v2.assomatrixpluslabel(6, o0, n_o, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes)
+        # asso_matrix, sp_nei_cnt, sp_lab = pointops_sp.assomatrixpluslabel_offset(6, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes, o0)
+        asso_matrix, sp_nei_cnt, sp_lab = pointops_sp_v2.assomatrixpluslabel(6, o0, n_o, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes)
         asso_matrix = asso_matrix.float()
         sp_nei_cnt = sp_nei_cnt.float()
         # asso_matrix: b x m x n 点与超点中心关联矩阵
@@ -990,21 +1010,25 @@ class SuperPointNet(nn.Module):
         # sp_lab: b x m x class 每个超点中点label数量
 
         p_fea = x1  # n × 32
-        # sp_fea = torch.matmul(asso_matrix, x1) / sp_nei_cnt
-        sp_fea = init_fea(p_fea, asso_matrix, sp_nei_cnt, o0)
+        sp_fea = torch.matmul(asso_matrix, x1) / sp_nei_cnt
+        # sp_fea = init_fea(p_fea, asso_matrix, sp_nei_cnt, o0)
         # sp_fea: b × m × 32   initial superpoints features
 
         # c2p_idx: b x n x 6
-        sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # sp_fea: b x m x c
             
-        sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # sp_fea: b x m x c
 
-        sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # sp_fea: b x m x c
 
-        fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # sp_fea: b x m x c
         # fea_dist: n * 6
         # cluster_xyz: b x m x 3
@@ -1020,21 +1044,21 @@ class SuperPointNet(nn.Module):
             # p2sp_idx: b x n
 
             # (b x 3 x m,  b x n, b x n x 6) -> (b x 3 x n)
-            re_p_xyz = pointops_sp.gathering_cluster_offset(sp_xyz.transpose(1, 2).contiguous(), p2sp_idx.int(), c2p_idx_abs, o0)
+            # re_p_xyz = pointops_sp.gathering_cluster_offset(sp_xyz.transpose(1, 2).contiguous(), p2sp_idx.int(), c2p_idx_abs, o0)
+            re_p_xyz = pointops_sp_v2.gathering_cluster(sp_xyz.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx_abs)
             # re_p_xyz: b x 3 x n 每个点最近的超点中心坐标，用于compact loss
             # (b, c, n), idx : (b, m) tensor, idx_3d: (b, m, k)
 
             # ------------------------------ reconstruct label ----------------------------
             # onehot_label: b x classes x n
-            sp_label = calc_sp_fea(final_asso, onehot_label.transpose(1, 2).contiguous(), 6, c2p_idx, cluster_idx, o0)
+            # sp_label = calc_sp_fea(final_asso, onehot_label.transpose(1, 2).contiguous(), 6, c2p_idx, cluster_idx, o0)
+            sp_label = calc_sp_fea_v2(final_asso, onehot_label.squeeze(0).transpose(0, 1).contiguous(), 6, c2p_idx, cluster_idx, o0, n_o)
             # sp_label: b x m x classes
-
-            # ------------------------------ reconstruct normal ----------------------------
-            normal = pxo[1].unsqueeze(0)
-            sp_normal = calc_sp_fea(final_asso, normal, 6, c2p_idx, cluster_idx, o0)
             
-            sp_pseudo_lab = torch.argmax(sp_lab, dim=2, keepdim=False)  # b x m
-            sp_pseudo_lab_onehot = self.label2one_hot(sp_pseudo_lab, self.classes)    # b x class x m
+            # sp_pseudo_lab = torch.argmax(sp_lab, dim=2, keepdim=False)  # b x m
+            sp_pseudo_lab = torch.argmax(sp_lab, dim=1, keepdim=False)  # b x m
+            # sp_pseudo_lab_onehot = self.label2one_hot(sp_pseudo_lab, self.classes)    # b x class x m
+            sp_pseudo_lab_onehot = self.label2one_hot_v2(sp_pseudo_lab, self.classes)    # b x class x m
             # c2p_idx: b x n x 6
             # final_asso: b x n x 6
             # f: b x n x m
@@ -1043,28 +1067,37 @@ class SuperPointNet(nn.Module):
             # re_p_label: b x n x classes
             
             # (b, classes, m), (b, n, 6) -> b x classes x n x 6
-            c2p_label = pointops_sp.grouping_offset(sp_label.transpose(1, 2).contiguous(), c2p_idx_abs, o0)
+            # c2p_label = pointops_sp.grouping_offset(sp_label.transpose(1, 2).contiguous(), c2p_idx_abs, o0)
+            c2p_label = pointops_sp_v2.grouping(sp_label.transpose(0, 1).contiguous(), c2p_idx_abs)
             # (b, classes, m), (b, n, 6) -> b x classes x n x 6
-
-            c2p_normal = pointops_sp.grouping_offset(sp_normal.transpose(1, 2).contiguous(), c2p_idx_abs, o0)
-            re_p_normal = torch.sum(c2p_normal * final_asso.unsqueeze(0).unsqueeze(1), dim=-1, keepdim=False)
             
-            re_p_label = torch.sum(c2p_label * final_asso.unsqueeze(0).unsqueeze(1), dim=-1, keepdim=False)
+            # re_p_label = torch.sum(c2p_label * final_asso.unsqueeze(0).unsqueeze(1), dim=-1, keepdim=False)
+            re_p_label = torch.sum(c2p_label * final_asso.unsqueeze(0), dim=-1, keepdim=False)
             # re_p_label: b x classes x n
 
             # ------------------------------ reconstruct normal ----------------------------
-            normals = pxo[1]
+            normal = pxo[1]
+            # sp_normal = calc_sp_fea(final_asso, normal.unsqueeze(0), 6, c2p_idx, cluster_idx, o0)
+            sp_normal = calc_sp_fea_v2(final_asso, normal, 6, c2p_idx, cluster_idx, o0, n_o)
+
+            # c2p_normal = pointops_sp.grouping_offset(sp_normal.transpose(1, 2).contiguous(), c2p_idx_abs, o0)
+            c2p_normal = pointops_sp_v2.grouping(sp_normal.transpose(0, 1).contiguous(), c2p_idx_abs)
+            # re_p_normal = torch.sum(c2p_normal * final_asso.unsqueeze(0).unsqueeze(1), dim=-1, keepdim=False)
+            re_p_normal = torch.sum(c2p_normal * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
+
             # normal_loss = point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, o0)
+
             # distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
             # normal_loss = (1 - distance_weight * torch.sum(normals * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
-            normal_loss = (1 - torch.sum(normals * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            # normal_loss = (1 - torch.sum(normal * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            normal_loss = (1 - torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
-            # normal_loss = normal_loss * distance_weight # 添加距离权重，距离越远，权重越小
         else:
             re_p_xyz = None
             re_p_label = None
 
-        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+        # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, n_o
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵
         cluster_idx: b*m 超点中心索引(基于n)
