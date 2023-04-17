@@ -975,6 +975,35 @@ class SuperPointNet(nn.Module):
         # primitive_embedding = self.embedding(x1)
         # boundary_pred = self.boundary(x1)
 
+        # # 可视化特征热力图
+        # for i in range(len(o0)):
+        #     if i == 0:
+        #         p = p0[:o0[i]]
+        #         x = x1[:o0[i]]
+        #     else:
+        #         p = p0[o0[i-1]:o0[i]]
+        #         x = x1[o0[i-1]:o0[i]]
+        #     # x = torch.mean(x, dim=1)
+        #     x = torch.norm(x, dim=1, p=2)
+        #     x = torch.clip(x, 3, 5)
+        #     # import matplotlib.pyplot as plt
+        #     # fig, ax = plt.subplots()
+        #     # ax.bar(range(len(x)), x.cpu().detach().numpy())
+        #     # plt.savefig('./feature_heatmap_{}.png'.format(i))
+        #     norm_x = (x - x.min()) / (x.max() - x.min())
+        #     # from sklearn.manifold import TSNE
+        #     # tsne = TSNE(n_components=1)
+        #     # embedding = tsne.fit_transform(norm_x.cpu().detach().numpy())
+        #     import matplotlib.cm as cm
+        #     cmap = cm.get_cmap('jet')
+        #     colors = cmap(norm_x.cpu().detach().numpy())
+        #     # import cv2
+        #     # heatmap = cv2.applyColorMap((norm_x.cpu().detach().numpy() * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        #     pcd = o3d.geometry.PointCloud()
+        #     pcd.points = o3d.utility.Vector3dVector(p.cpu().detach().numpy())
+        #     pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
+        #     o3d.io.write_point_cloud('visual/feature_heatmap/{}.ply'.format(i), pcd)
+
         # number of clusters for FPS
         num_clusters = 40
         n_o, count = [int(o0[0].item() * 0.008)], int(o0[0].item() * 0.008)
@@ -1040,6 +1069,17 @@ class SuperPointNet(nn.Module):
             sp_xyz = cluster_xyz
             # sp_xyz: b x m x 3
 
+            # # 可视化超点中心
+            # for i in range(len(n_o)):
+            #     if i == 0:
+            #         sp_coord = sp_xyz[:n_o[i]]
+            #     else:
+            #         sp_coord = sp_xyz[n_o[i-1]:n_o[i]]
+            #     sp_coord = sp_coord.cpu().detach().numpy()
+            #     pcd = o3d.geometry.PointCloud()
+            #     pcd.points = o3d.utility.Vector3dVector(sp_coord)
+            #     o3d.io.write_point_cloud('visual/sp_center_vis/sp_coord_{}.ply'.format(i), pcd)
+
             p2sp_idx = torch.argmax(final_asso, dim=1, keepdim=False)
             # p2sp_idx: b x n
 
@@ -1087,10 +1127,18 @@ class SuperPointNet(nn.Module):
 
             # normal_loss = point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, o0)
 
-            # distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
+            distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
             # normal_loss = (1 - distance_weight * torch.sum(normals * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
             # normal_loss = (1 - torch.sum(normal * re_p_normal.squeeze(0).transpose(0,1).contiguous(), dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
-            normal_loss = (1 - torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            # normal_loss = (1 - torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+
+            sp_center_normal = pointops_sp_v2.gathering_cluster(re_p_normal.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx).transpose(0, 1).contiguous()
+            # sp_center_normal: m x 3 距离每个点最近的超点中心的重建法向量
+            # normal_consistency_loss = (1 - torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            # normal_consistency_loss = (1 - torch.sum(sp_center_normal * re_p_normal * (1-distance_weight.repeat(1,3).view(-1,3)), dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean() # 加上权重
+            normal_consistency_loss = (1 - (1 - distance_weight) * torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            # 法线一致性损失，计算每个点的重建法向量与距离最近的超点中心的重建法向量的余弦相似度，余弦相似度越大，损失越小
+            normal_loss = normal_consistency_loss
 
         else:
             re_p_xyz = None

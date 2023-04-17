@@ -11,11 +11,13 @@ dataset=$1
 exp_name=$2
 exp_dir=exp/${dataset}/${exp_name}
 model_dir=${exp_dir}/model
+visual_dir=${exp_dir}/visual
 # result_dir=${exp_dir}/result
 # config=config/${dataset}/${dataset}.yaml
 config=$3
 
 mkdir -p ${model_dir}
+mkdir -p ${visual_dir}
 # mkdir -p ${result_dir}/last
 # mkdir -p ${result_dir}/best
 cp tool/train_sp.sh tool/${TRAIN_CODE} ${config} ${exp_dir}

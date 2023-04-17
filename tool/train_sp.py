@@ -9,6 +9,7 @@ import numpy as np
 import logging
 import argparse
 import shutil
+import requests
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -70,6 +71,14 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
+    
+    # headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
+    # resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+    #                  json={
+    #                      "title": "A100: begin training",
+    #                      "name": "Your model starts training",
+    #                      "content": "Using GPU # {}, the save path is {}".format(args.train_gpu, args.save_path)
+    #                  }, headers = headers)
 
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
@@ -318,6 +327,11 @@ def main_worker(gpu, ngpus_per_node, argss):
         scaler = torch.cuda.amp.GradScaler()
     else:
         scaler = None
+
+    # 测试与可视化
+    if args.evaluate:
+        with torch.no_grad():
+            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
         
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -340,26 +354,26 @@ def main_worker(gpu, ngpus_per_node, argss):
             writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
             writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
 
-        is_best = False
-        if args.evaluate and (epoch_log % args.eval_freq == 0):
-            # if args.data_name == 'shapenet':
-            #     raise NotImplementedError()
-            # else:
-            #     loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
-            s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion)
+        # is_best = False
+        # if args.evaluate and (epoch_log % args.eval_freq == 0):
+        #     if args.data_name == 'shapenet':
+        #         raise NotImplementedError()
+        #     else:
+        #         loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
+        #     # s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion)
 
-            if main_process():
-                writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
-                writer.add_scalar('type_loss_val', type_loss_val, epoch_log)
-                writer.add_scalar('boundary_loss_val', boundary_loss_val, epoch_log)
-                writer.add_scalar('s_miou', s_miou, epoch_log)
-                writer.add_scalar('p_miou', p_miou, epoch_log)
-                # writer.add_scalar('loss_val', loss_val, epoch_log)
-                # writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
-                # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
-                # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
-                is_best = s_miou > best_iou
-                best_iou = max(best_iou, s_miou)
+        #     if main_process():
+        #         # writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
+        #         # writer.add_scalar('type_loss_val', type_loss_val, epoch_log)
+        #         # writer.add_scalar('boundary_loss_val', boundary_loss_val, epoch_log)
+        #         # writer.add_scalar('s_miou', s_miou, epoch_log)
+        #         # writer.add_scalar('p_miou', p_miou, epoch_log)
+        #         writer.add_scalar('loss_val', loss_val, epoch_log)
+        #         writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
+        #         writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
+        #         writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
+        #         # is_best = s_miou > best_iou
+        #         # best_iou = max(best_iou, s_miou)
 
         # if (epoch_log % args.save_freq == 0) and main_process():
         #     if not os.path.exists(args.save_path + "/model/"):
@@ -381,9 +395,17 @@ def main_worker(gpu, ngpus_per_node, argss):
             else:
                 torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, filename)
 
-    # if main_process():
-    #     writer.close()
-    #     logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
+    if main_process():
+        writer.close()
+        logger.info('==>Training done!')
+        headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
+        resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+            json={
+                "title": "A100: The training is over",
+                "name": "End of use of GPU #{}".format(args.train_gpu),
+                "content": "The training is over, please check the result"
+            }, headers = headers)
+        
 
 def label2one_hot(labels, C=10):
     n = labels.size(0)
@@ -455,6 +477,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
 
             loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
             # loss = re_xyz_loss + normal_loss
+            # loss = normal_loss
 
         # for j in range(offset.shape[0]):
         #     init_center = c_idx[j, :].cpu().numpy()
@@ -472,23 +495,23 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_vis/{}.ply'.format(filename_)
         #     partition2ply(root_name, xyz, pred_components)
 
-        for j in range(offset.shape[0]):
-            init_center = c_idx.cpu().numpy()
-            filename_ = filename[j]
-            if j == 0:
-                # init_center = c_idx[:sp_offset[0]].cpu().numpy()
-                xyz = coord[:offset[0]].cpu().numpy()
-                spout_ = spout[:offset[0]].detach().cpu().numpy()
-                pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
-            else:
-                # init_center = c_idx[sp_offset[j-1]:sp_offset[j]].cpu().numpy()
-                xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
-                spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
-                pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
-            pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
-            # time_tag = time.strftime("%Y%m%d-%H%M%S")
-            root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_vis_1.0/{}.ply'.format(filename_)
-            partition2ply(root_name, xyz, pred_components)
+        # for j in range(offset.shape[0]):
+        #     init_center = c_idx.cpu().numpy()
+        #     filename_ = filename[j]
+        #     if j == 0:
+        #         # init_center = c_idx[:sp_offset[0]].cpu().numpy()
+        #         xyz = coord[:offset[0]].cpu().numpy()
+        #         spout_ = spout[:offset[0]].detach().cpu().numpy()
+        #         pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
+        #     else:
+        #         # init_center = c_idx[sp_offset[j-1]:sp_offset[j]].cpu().numpy()
+        #         xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
+        #         spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
+        #         pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
+        #     pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
+        #     # time_tag = time.strftime("%Y%m%d-%H%M%S")
+        #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_only_normconsisloss/{}.ply'.format(filename_)
+        #     partition2ply(root_name, xyz, pred_components)
 
             
         optimizer.zero_grad()
@@ -622,27 +645,31 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     # return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 
-def validate(val_loader, boundarymodel, model, criterion):
+def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    # loss_meter = AverageMeter()
-    # intersection_meter = AverageMeter()
-    # union_meter = AverageMeter()
-    # target_meter = AverageMeter()
-    feat_loss_meter = AverageMeter()
-    type_loss_meter = AverageMeter()
-    boundary_loss_meter = AverageMeter()
-    s_iou_meter = AverageMeter()
-    type_iou_meter = AverageMeter()
+    loss_re_xyz_meter = AverageMeter()
+    loss_re_label_meter = AverageMeter()
+    loss_re_sp_meter = AverageMeter()
+    loss_norm_meter = AverageMeter()
+    loss_meter = AverageMeter()
+    intersection_meter = AverageMeter()
+    union_meter = AverageMeter()
+    target_meter = AverageMeter()
+    # feat_loss_meter = AverageMeter()
+    # type_loss_meter = AverageMeter()
+    # boundary_loss_meter = AverageMeter()
+    # s_iou_meter = AverageMeter()
+    # type_iou_meter = AverageMeter()
 
     torch.cuda.empty_cache()
 
-    boundarymodel.eval()
+    # boundarymodel.eval()
     model.eval()
     end = time.time()
-    for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(val_loader):
+    for i, (coord, normals, boundary, label, semantic, param, offset, edges, filename) in enumerate(val_loader):
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
         coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
@@ -655,89 +682,142 @@ def validate(val_loader, boundarymodel, model, criterion):
         #     feat = torch.cat([normals, coord], 1)
         
         with torch.no_grad():
-            boundary_pred = boundarymodel([coord, normals, offset])
-            softmax = torch.nn.Softmax(dim=1)
-            boundary_pred_ = softmax(boundary_pred)
-            boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
+            # boundary_pred = boundarymodel([coord, normals, offset])
+            # softmax = torch.nn.Softmax(dim=1)
+            # boundary_pred_ = softmax(boundary_pred)
+            # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
 
-            primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            # loss = criterion(output, target)
-            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
-            type_loss = criterion(type_per_point, semantic)
-            boundary_loss = criterion(boundary_pred, boundary)
-            loss = feat_loss + type_loss + boundary_loss
+            # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
+            # # loss = criterion(output, target)
+            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            # type_loss = criterion(type_per_point, semantic)
+            # boundary_loss = criterion(boundary_pred, boundary)
+            # loss = feat_loss + type_loss + boundary_loss
+            onehot_label = label2one_hot(semantic, args['classes'])
+            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_offset = model([coord, normals, offset], onehot_label, semantic) # superpoint
+            re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
+            if args['re_label_loss'] == 'cel':
+                # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
+                re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label.transpose(0,1).contiguous(), semantic) # point label loss
+            elif args['re_label_loss'] == 'mse':
+                re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, onehot_label)
 
-        # output = output.max(1)[1]
-        # n = coord.size(0)
-        # if args.multiprocessing_distributed:
-        #     loss *= n
-        #     count = target.new_tensor([n], dtype=torch.long)
-        #     dist.all_reduce(loss), dist.all_reduce(count)
-        #     n = count.item()
-        #     loss /= n
-
-        # intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-        # if args.multiprocessing_distributed:
-        #     dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        # intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
-
-        # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
-        # loss_meter.update(loss.item(), n)
+            if args['re_sp_loss'] == 'cel':
+                re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab) # superpoint label loss
+            elif args['re_sp_loss'] == 'mse':
+                re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
             
-        spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
-        s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
-        # All Reduce loss
+            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
+            loss = re_xyz_loss + normal_loss
+            # loss = re_xyz_loss
+
+        # 可视化超点分割结果
+        if args.visual:
+            for j in range(offset.shape[0]):
+                init_center = c_idx.cpu().numpy()
+                filename_ = filename[j]
+                if j == 0:
+                    # init_center = c_idx[:sp_offset[0]].cpu().numpy()
+                    xyz = coord[:offset[0]].cpu().numpy()
+                    spout_ = spout[:offset[0]].detach().cpu().numpy()
+                    pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
+                else:
+                    # init_center = c_idx[sp_offset[j-1]:sp_offset[j]].cpu().numpy()
+                    xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
+                    spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
+                    pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
+                pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
+                # time_tag = time.strftime("%Y%m%d-%H%M%S")
+                root_name = 'exp/abc/sp_v2_n_con+dis+xyzupdate/visual/{}.ply'.format(filename_)
+                partition2ply(root_name, xyz, pred_components)
+
+        output = output.max(1)[1]
+        n = coord.size(0)
         if args.multiprocessing_distributed:
-            dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
-            # dist.all_reduce(s_iou.div_(torch.cuda.device_count()))
-            # dist.all_reduce(p_iou.div_(torch.cuda.device_count()))
-        feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
-        feat_loss_meter.update(feat_loss_.item())
-        type_loss_meter.update(type_loss_.item())
-        boundary_loss_meter.update(boundary_loss_.item())
-        s_iou_meter.update(s_iou)
-        type_iou_meter.update(p_iou)
+            loss *= n
+            count = target.new_tensor([n], dtype=torch.long)
+            dist.all_reduce(loss), dist.all_reduce(count)
+            n = count.item()
+            loss /= n
+
+        intersection, union, target = intersectionAndUnionGPU(output, semantic, args.classes, args.ignore_label)
+        if args.multiprocessing_distributed:
+            dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
+        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+
+        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        loss_re_xyz_meter.update(re_xyz_loss.item(), n)
+        loss_re_label_meter.update(re_label_loss.item(), n)
+        loss_re_sp_meter.update(re_sp_loss.item(), n)
+        loss_norm_meter.update(normal_loss.item(), n)
+        loss_meter.update(loss.item(), n)
+            
+        # spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
+        # s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
+        # # All Reduce loss
+        # if args.multiprocessing_distributed:
+        #     dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
+        #     dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
+        #     dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
+        #     # dist.all_reduce(s_iou.div_(torch.cuda.device_count()))
+        #     # dist.all_reduce(p_iou.div_(torch.cuda.device_count()))
+        # feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
+        # feat_loss_meter.update(feat_loss_.item())
+        # type_loss_meter.update(type_loss_.item())
+        # boundary_loss_meter.update(boundary_loss_.item())
+        # s_iou_meter.update(s_iou)
+        # type_iou_meter.update(p_iou)
         batch_time.update(time.time() - end)
         end = time.time()
         if (i + 1) % args.print_freq == 0 and main_process():
             logger.info('Test: [{}/{}] '
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
-                        # 'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}) '
-                        'Feat_Loss {feat_loss_meter.val:.4f} ({feat_loss_meter.avg:.4f}) '
-                        'Type_Loss {type_loss_meter.val:.4f} ({type_loss_meter.avg:.4f}) '
-                        'Boundary_Loss {boundary_loss_meter.val:.4f} ({boundary_loss_meter.avg:.4f}) '
-                        'Seg_IoU {s_iou_meter.val:.4f} ({s_iou_meter.avg:.4f}) '
-                        'Type_IoU {type_iou_meter.val:.4f} ({type_iou_meter.avg:.4f}).'.format(i + 1, len(val_loader),
+                        'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
+                        'LS_re_label {loss_re_label_meter.val:.4f} '
+                        'LS_re_sp {loss_re_sp_meter.val:.4f} '
+                        'LS_norm {loss_norm_meter.val:.4f} '
+                        'Loss {loss_meter.val:.4f} '
+                        'Accuracy {accuracy:.4f}.'.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
-                                                          feat_loss_meter=feat_loss_meter,
-                                                          type_loss_meter=type_loss_meter,
-                                                          boundary_loss_meter=boundary_loss_meter,
-                                                          s_iou_meter=s_iou_meter,
-                                                          type_iou_meter=type_iou_meter))
+                                                          loss_re_xyz_meter=loss_re_xyz_meter,
+                                                          loss_re_label_meter=loss_re_label_meter,
+                                                          loss_re_sp_meter=loss_re_sp_meter,
+                                                          loss_norm_meter=loss_norm_meter,
+                                                          loss_meter=loss_meter,
+                                                          accuracy=accuracy))
 
-    # iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    # accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    # mIoU = np.mean(iou_class)
-    # mAcc = np.mean(accuracy_class)
-    # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
+    mIoU = np.mean(iou_class)
+    mAcc = np.mean(accuracy_class)
+    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
 
     if main_process():
-        # logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
-        # for i in range(args.classes):
-        #     logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
-        logger.info('Val result: Seg_mIoU/Type_mIoU {:.4f}/{:.4f}.'.format(s_iou_meter.avg, type_iou_meter.avg))
+        logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
+        for i in range(args.classes):
+            logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
+        # logger.info('Val result: Seg_mIoU/Type_mIoU {:.4f}/{:.4f}.'.format(s_iou_meter.avg, type_iou_meter.avg))
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
 
-    # return loss_meter.avg, mIoU, mAcc, allAcc
-    return s_iou_meter.avg, type_iou_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
+    return loss_meter.avg, mIoU, mAcc, allAcc
+    # return s_iou_meter.avg, type_iou_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 
 if __name__ == '__main__':
     import gc
     gc.collect()
-    main()
+    try:
+        main()
+    except Exception as e:
+        # 添加异常处理，如果出现异常，发送微信通知
+        print(str(e))
+        headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
+        resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+            json={
+                "title": "A100: The training has stopped",
+                "name": "Your network training has made an error",
+                "content": str(e)
+            }, headers = headers)

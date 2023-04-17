@@ -1,6 +1,7 @@
 from typing import List
 import torch
 import torch.nn as nn
+from scipy.spatial import KDTree
 
 from lib.pointops_sp.functions import pointops_sp
 from lib.pointops_sp_v2.functions import pointops_sp_v2
@@ -165,13 +166,21 @@ class learn_SLIC_calc_v2(nn.Module):
 
         # f, sp_nei_cnt = pointops_sp.assomatrixfloat_offset(nc2p, bi_w, c2p_idx, cluster_idx.unsqueeze(-1), offset)
         f, sp_nei_cnt = pointops_sp_v2.assomatrixfloat(nc2p, offset, sp_offset, bi_w, c2p_idx, cluster_idx.unsqueeze(-1))
-        # f: b x m x n 点与超点中心关联矩阵
+        # f: b x m x n 点与超点中心关联概率矩阵
         # sp_nei_cnt: b x m x 1 每个超点所包含点数
 
         sp_sum = f.sum(dim=1, keepdim=True)                 # b x m x 1
         sp_fea = torch.matmul(f, o_p_fea) / (sp_sum+1e-8)   # (b, m, n) X (b, n, c) -> (b, m, c)
         
         sp_xyz = torch.matmul(f, p_xyz) / (sp_sum+1e-8)     # (b, m, n) X (b, n, 3) -> (b, m, 3)
+        # p2sp_idx = torch.argmax(f, dim=1)                   # n 点-超点硬关联
+        # sp_idx = torch.gather(c2p_idx_abs, 1, p2sp_idx.view(-1, 1)).squeeze()     # n
+        tree = KDTree(p_xyz.cpu().numpy())  # 构建KDTree
+        dist, idx = tree.query(sp_xyz.detach().cpu().numpy(), k=1)  # 每个超点最近的点
+        nearest_coord = p_xyz[idx, :]  # m x 3
+        sp_xyz = nearest_coord  # 选择最近点作为超点坐标
+
+
         # for i in range(offset.size(0)):
         #     if i == 0:
         #         f_i = f[:, :, :offset[0]]
