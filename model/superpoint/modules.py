@@ -173,12 +173,35 @@ class learn_SLIC_calc_v2(nn.Module):
         sp_fea = torch.matmul(f, o_p_fea) / (sp_sum+1e-8)   # (b, m, n) X (b, n, c) -> (b, m, c)
         
         sp_xyz = torch.matmul(f, p_xyz) / (sp_sum+1e-8)     # (b, m, n) X (b, n, 3) -> (b, m, 3)
-        # p2sp_idx = torch.argmax(f, dim=1)                   # n 点-超点硬关联
-        # sp_idx = torch.gather(c2p_idx_abs, 1, p2sp_idx.view(-1, 1)).squeeze()     # n
-        tree = KDTree(p_xyz.cpu().numpy())  # 构建KDTree
-        dist, idx = tree.query(sp_xyz.detach().cpu().numpy(), k=1)  # 每个超点最近的点
-        nearest_coord = p_xyz[idx, :]  # m x 3
-        sp_xyz = nearest_coord  # 选择最近点作为超点坐标
+        p2sp_idx = torch.argmax(bi_w, dim=1)                   # n 点-超点硬关联
+        sp_idx = torch.gather(c2p_idx_abs, 1, p2sp_idx.view(-1, 1)).squeeze()     # n
+        if self.last:
+            idx = []
+            for j in range(sp_xyz.size(0)):
+                try:
+                    p_xyz_j = p_xyz[sp_idx == j]
+                    p_xyz_j_idx = torch.nonzero(sp_idx == j).squeeze()
+                    if (p_xyz_j_idx.numel() == 1):  # 超点中只有一个点，选择该点作为超点坐标
+                        idx.append(p_xyz_j_idx)
+                        continue
+                    if (p_xyz_j_idx.numel() == 0):  # 超点中没有点，选择去全局最近点作为超点坐标
+                        tree = KDTree(p_xyz.cpu().numpy())  # 构建KDTree
+                        dist, idx_j = tree.query(sp_xyz[j].detach().cpu().numpy(), k=1)  # 每个超点最近的点
+                        idx.append(idx_j)
+                        continue
+                    tree = KDTree(p_xyz_j.cpu().numpy())  # 构建KDTree
+                    dist, idx_j = tree.query(sp_xyz[j].detach().cpu().numpy(), k=1)  # 分配到每个超点的点中距离超点中心最近的点
+                    idx.append(p_xyz_j_idx[idx_j])
+                except:
+                    print('error')
+            idx = torch.tensor(idx).cuda()
+            sp_xyz = p_xyz[idx, :]  # 选择最近点作为超点坐标
+            # sp_fea = o_p_fea[idx, :]  # 选择最近点作为超点特征
+        # tree = KDTree(p_xyz.cpu().numpy())  # 构建KDTree
+        # dist, idx = tree.query(sp_xyz.detach().cpu().numpy(), k=1)  # 每个超点最近的点
+        # idx = torch.tensor(idx).cuda()
+        # nearest_coord = p_xyz[idx, :]  # m x 3
+        # sp_xyz = nearest_coord  # 选择最近点作为超点坐标
 
 
         # for i in range(offset.size(0)):
@@ -200,7 +223,7 @@ class learn_SLIC_calc_v2(nn.Module):
         #         sp_xyz = torch.cat([sp_xyz, sp_xyz_i], 0)   # (b, m, 3)
 
         if self.last:
-            return bi_w, sp_fea, sp_xyz
+            return bi_w, sp_fea, sp_xyz, idx
         return sp_fea, sp_xyz
 
 
@@ -364,3 +387,113 @@ def point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, offset):
     # loss = (1 - similarity).sum() / (batch_size * num_points * k)
     
     return loss / len(offset)
+
+
+def Contrastive_InfoNCE_loss(sp_fea, sp_xyz_idx, instance_label, sp_offset, temperature=1.0):
+    """
+    计算超点中心的对比损失函数
+    :param sp_fea: tensor, [m, 32], 超点的特征
+    :param sp_xyz_idx: tensor, [m], 超点的索引(基于n)
+    :param instance_label: tensor, [n], 每个点的基元实例标签
+    :param sp_offset: tensor, [batch_size], 超点起始位置标识
+    :param temperature: float, 温度参数
+    """
+
+    loss = torch.tensor(0.0, device=sp_fea.device)
+    sp_instance_label = instance_label[sp_xyz_idx] # [m]
+    for i in range(len(sp_offset)):
+        if i == 0:
+            sp_fea_i = sp_fea[:sp_offset[0]]
+            sp_instance_label_i = sp_instance_label[:sp_offset[0]]
+        else:
+            sp_fea_i = sp_fea[sp_offset[i-1]:sp_offset[i]]
+            sp_instance_label_i = sp_instance_label[sp_offset[i-1]:sp_offset[i]]
+        # 计算每个点云模型中超点的对比损失函数
+        m = sp_fea_i.size(0)
+        sp_neighbor_fea = sp_fea_i.unsqueeze(0).repeat(m, 1, 1) # [m, m, 32]   
+        mask = torch.ones(m, m)
+        idx = torch.arange(m)
+        mask = mask.masked_fill(idx == idx[:, None], 0).to(device=sp_fea.device) # [m, m]
+        sp_neighbor_fea = sp_neighbor_fea[mask.bool()].view(m, -1, 32)  # [m, m-1, 32]
+
+        sp_neighbor_instance_label = sp_instance_label_i.unsqueeze(0).repeat(m, 1) # [m, m]
+        sp_neighbor_instance_label = sp_neighbor_instance_label[mask.bool()].view(m, -1)  # [m, m-1]
+
+        posmask = sp_neighbor_instance_label == sp_instance_label_i.unsqueeze(1)
+        point_mask = torch.sum(posmask.int(), -1)
+        point_mask = torch.logical_and(0 < point_mask, point_mask < m - 1)
+
+        if not torch.any(point_mask):
+            continue
+
+        posmask = posmask[point_mask]
+        sp_fea_i = sp_fea_i[point_mask]
+        sp_neighbor_fea = sp_neighbor_fea[point_mask]
+
+        dist_l2 = torch.sum((sp_fea_i.unsqueeze(1) - sp_neighbor_fea) ** 2, dim=-1)
+        dist_l2 = torch.sqrt(dist_l2 + 1e-8)
+
+        dist_l2 = -dist_l2
+        dist_l2 = dist_l2 - torch.max(dist_l2, -1, keepdim=True)[0]
+        exp = torch.exp(dist_l2 / temperature)
+
+        pos = torch.sum(exp * posmask, dim=-1)
+        neg = torch.sum(exp, dim=-1)
+        infoNCE_loss = -torch.log(pos / neg + 1e-8).mean()
+        loss += infoNCE_loss
+    
+    return loss / len(sp_offset)
+
+
+def Contrastive_InfoNCE_loss_p2sp(p_fea, p2sp_idx, c2p_idx_abs, sp_fea, sp_xyz_idx, instance_label, sp_offset, temperature=0.5):
+    """
+    计算点与超点的对比损失函数
+    :param p_fea: tensor, [n, 32], 点的特征
+    :param p2sp_idx: tensor, [n], 点对应的超点索引(基于k)
+    :param c2p_idx_abs: tensor, [n], 点对应的最近6个超点索引(基于m)
+    :param sp_fea: tensor, [m, 32], 超点的特征
+    :param sp_xyz_idx: tensor, [m], 超点的索引(基于n)
+    :param instance_label: tensor, [n], 每个点的基元实例标签
+    :param sp_offset: tensor, [batch_size], 超点起始位置标识
+    :param temperature: float, 温度参数
+    """
+
+    loss = torch.tensor(0.0, device=sp_fea.device)
+    sp_instance_label = instance_label[sp_xyz_idx] # [m]超点中心对应的实例标签
+    sp_idx = torch.gather(c2p_idx_abs.squeeze(0), dim=1, index=p2sp_idx.view(-1,1)).squeeze(1) # [n]点对应的超点索引(基于m)
+    for i in range(len(sp_offset)):
+        if i == 0:
+            sp_fea_i = sp_fea[:sp_offset[0]]
+            sp_instance_label_i = sp_instance_label[:sp_offset[0]]
+        else:
+            sp_fea_i = sp_fea[sp_offset[i-1]:sp_offset[i]]
+            sp_instance_label_i = sp_instance_label[sp_offset[i-1]:sp_offset[i]]
+        # 计算每个点云模型中每个超点中相同实例label的点与超点中心的对比损失
+        m = sp_fea_i.size(0)    # 当前点云超点中心数量
+        for j in range(m):
+            p_fea_j = p_fea[sp_idx == j]    # 分配到当前超点的点特征
+            p_label_j = instance_label[sp_idx == j] # 分配到当前超点的点实例label
+            sp_fea_j = sp_fea_i[j]  # 当前超点特征
+            sp_instance_label_j = sp_instance_label_i[j]    # 当前超点实例label
+            k = p_fea_j.size(0) # 分配到当前超点的点数量
+            posmask = p_label_j == sp_instance_label_j
+            point_mask = torch.sum(posmask.int())
+            point_mask = torch.logical_and(0 < point_mask, point_mask < k - 1)
+
+            if not point_mask:
+                continue
+
+            dist_l2 = torch.sum((sp_fea_j.unsqueeze(0) - p_fea_j) ** 2, dim=-1)
+            dist_l2 = torch.sqrt(dist_l2 + 1e-8)
+
+            dist_l2 = -dist_l2
+            dist_l2 = dist_l2 - torch.max(dist_l2, -1, keepdim=True)[0]
+            exp = torch.exp(dist_l2 / temperature)
+
+            pos = torch.sum(exp * posmask, dim=-1)
+            neg = torch.sum(exp, dim=-1)
+            infoNCE_loss = -torch.log(pos / neg + 1e-8).mean()
+            loss += infoNCE_loss
+    
+    return loss / sp_offset[-1]
+

@@ -350,9 +350,9 @@ def main_worker(gpu, ngpus_per_node, argss):
             # writer.add_scalar('type_loss_train', type_loss_train, epoch_log)
             # writer.add_scalar('boundary_loss_train', boundary_loss_train, epoch_log)
             writer.add_scalar('loss_train', loss_train, epoch_log)
-            writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
-            writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
-            writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
+            # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
+            # writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
+            # writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
 
         # is_best = False
         # if args.evaluate and (epoch_log % args.eval_freq == 0):
@@ -422,6 +422,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     loss_re_label_meter = AverageMeter()
     loss_re_sp_meter = AverageMeter()
     loss_norm_meter = AverageMeter()
+    loss_sp_contrast_meter = AverageMeter()
+    loss_p2sp_contrast_meter = AverageMeter()
     loss_meter = AverageMeter()
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
@@ -453,7 +455,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
             onehot_label = label2one_hot(semantic, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_offset = model([coord, normals, offset], onehot_label, semantic) # superpoint
+            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, sp_offset = model([coord, normals, offset], onehot_label, semantic, label) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
@@ -475,7 +477,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             elif args['re_sp_loss'] == 'mse':
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
 
-            loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
+            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss + sp_center_contrast_loss + p2sp_contrast_loss
+            loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss + p2sp_contrast_loss
             # loss = re_xyz_loss + normal_loss
             # loss = normal_loss
 
@@ -548,6 +551,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         loss_re_label_meter.update(re_label_loss.item(), n)
         loss_re_sp_meter.update(re_sp_loss.item(), n)
         loss_norm_meter.update(normal_loss.item(), n)
+        loss_sp_contrast_meter.update(sp_center_contrast_loss.item(), n)
+        loss_p2sp_contrast_meter.update(p2sp_contrast_loss.item(), n)
         loss_meter.update(loss.item(), n)
         
         # # All Reduce loss
@@ -606,6 +611,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                         'LS_re_label {loss_re_label_meter.val:.4f} '
                         'LS_re_sp {loss_re_sp_meter.val:.4f} '
                         'LS_norm {loss_norm_meter.val:.4f} '
+                        'LS_sp_contrast {loss_sp_contrast_meter.val:.4f} '
+                        'LS_p2sp_contrast {loss_p2sp_contrast_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '
                         'lr {lr} '
                         'Accuracy {accuracy:.4f}.'.format(epoch+1, args["epochs"], i + 1, len(train_loader),
@@ -615,15 +622,20 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                                                           loss_re_label_meter=loss_re_label_meter,
                                                           loss_re_sp_meter=loss_re_sp_meter,
                                                           loss_norm_meter=loss_norm_meter,
+                                                          loss_sp_contrast_meter=loss_sp_contrast_meter,
+                                                          loss_p2sp_contrast_meter=loss_p2sp_contrast_meter,
                                                           loss_meter=loss_meter,
                                                           lr=lr,
                                                           accuracy=accuracy))
 
         if main_process():
+            writer.add_scalar('norm_loss_train_batch', loss_norm_meter.val, current_iter)
+            writer.add_scalar('sp_contrast_loss_train_batch', loss_sp_contrast_meter.val, current_iter)
+            writer.add_scalar('p2sp_contrast_loss_train_batch', loss_p2sp_contrast_meter.val, current_iter)
             writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
-            writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
-            writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
+            # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
+            # writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
+            # writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
 
             # writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
             # writer.add_scalar('type_loss_train_batch', type_loss_meter.val, current_iter)
@@ -694,7 +706,7 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
             onehot_label = label2one_hot(semantic, args['classes'])
-            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_offset = model([coord, normals, offset], onehot_label, semantic) # superpoint
+            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, sp_offset = model([coord, normals, offset], onehot_label, semantic, label) # superpoint
             re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
             if args['re_label_loss'] == 'cel':
                 # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
@@ -728,7 +740,7 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
                     pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
                 pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
                 # time_tag = time.strftime("%Y%m%d-%H%M%S")
-                root_name = 'exp/abc/sp_v2_n_con+dis+xyzupdate/visual/{}.ply'.format(filename_)
+                root_name = 'exp/abc/sp_v2_n_con+dis+p2spcontrast0.5_addbehind3layer/visual/{}.ply'.format(filename_)
                 partition2ply(root_name, xyz, pred_components)
 
         output = output.max(1)[1]

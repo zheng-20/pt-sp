@@ -13,7 +13,8 @@ from lib.pointops.functions import pointops
 from lib.boundaryops.functions import boundaryops
 from lib.pointops_sp.functions import pointops_sp
 from lib.pointops_sp_v2.functions import pointops_sp_v2
-from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, point_normal_similarity_loss, calc_sp_normal, learn_SLIC_calc_v2, calc_sp_fea_v2
+from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, \
+    point_normal_similarity_loss, calc_sp_normal, learn_SLIC_calc_v2, calc_sp_fea_v2, Contrastive_InfoNCE_loss, Contrastive_InfoNCE_loss_p2sp
 
 
 class PointTransformerLayer(nn.Module):
@@ -923,7 +924,7 @@ class SuperPointNet(nn.Module):
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
         self.learn_SLIC_calc_3 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
         self.learn_SLIC_calc_4 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
@@ -958,7 +959,7 @@ class SuperPointNet(nn.Module):
         target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
         return target.type(torch.float32)
 
-    def forward(self, pxo, onehot_label=None, label=None):
+    def forward(self, pxo, onehot_label=None, label=None, instance_label=None):
         p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
         x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
         p1, x1, o1 = self.enc1([p0, x0, o0])
@@ -1053,14 +1054,18 @@ class SuperPointNet(nn.Module):
         # sp_fea: b x m x c
 
         # sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
-        sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        fea_dist, sp_fea, cluster_xyz, sp_xyz_idx = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # sp_fea: b x m x c
 
+        p2sp_idx = torch.argmax(fea_dist, dim=1, keepdim=False)
+        p2sp_contrast_loss = Contrastive_InfoNCE_loss_p2sp(p_fea, p2sp_idx, c2p_idx_abs, sp_fea, sp_xyz_idx, instance_label, n_o)
+
         # fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
-        fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        fea_dist, sp_fea, cluster_xyz, sp_xyz_idx = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # sp_fea: b x m x c
         # fea_dist: n * 6
         # cluster_xyz: b x m x 3
+        # sp_xyz_idx: m * 3
         
         final_asso = fea_dist
 
@@ -1140,12 +1145,17 @@ class SuperPointNet(nn.Module):
             # 法线一致性损失，计算每个点的重建法向量与距离最近的超点中心的重建法向量的余弦相似度，余弦相似度越大，损失越小
             normal_loss = normal_consistency_loss
 
+            # ------------------------------ contrast learning ----------------------------
+            # sp_center_contrast_loss = Contrastive_InfoNCE_loss(sp_fea, sp_xyz_idx, instance_label, n_o)
+            sp_center_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算sp中心对比损失
+            # p2sp_contrast_loss = Contrastive_InfoNCE_loss_p2sp(p_fea, p2sp_idx, c2p_idx_abs, sp_fea, sp_xyz_idx, instance_label, n_o)
+
         else:
             re_p_xyz = None
             re_p_label = None
 
         # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
-        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, n_o
+        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, n_o
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵
         cluster_idx: b*m 超点中心索引(基于n)

@@ -56,9 +56,9 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [1]
+  train_gpu: [0]
   workers: 16  # data loader workers
-  batch_size: 14  # batch size for training
+  batch_size: 12  # batch size for training
   batch_size_val: 8  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
   epochs: 200
@@ -73,7 +73,7 @@ TRAIN:
   save_freq: 10
   save_path: runs/abc
   weight:  # path to initial weight (default: none)
-  resume: /data/fz20/project/point-transformer-boundary/exp/abc/sp_v2_n_con+dis+xyzupdate/model/train_epoch_50.pth # path to latest checkpoint (default: none)
+  resume: /data/fz20/project/point-transformer-boundary/exp/abc/sp_v2_n_con+dis+p2spcontrast0.5_addbehind3layer/model/train_epoch_50.pth # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 1
 Distributed:
