@@ -1136,7 +1136,7 @@ class SuperPointNet(nn.Module):
             # normal_loss = point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, o0)
 
             distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
-            normal_loss = (1 - (1 - distance_weight) * torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()   # 添加距离权重
+            # normal_loss = (1 - (1 - distance_weight) * torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()   # 添加距离权重
             # normal_loss = (1 - torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
             sp_center_normal = pointops_sp_v2.gathering_cluster(re_p_normal.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx).transpose(0, 1).contiguous()
@@ -1152,8 +1152,8 @@ class SuperPointNet(nn.Module):
             # # sp_center_contrast_loss = Contrastive_InfoNCE_loss_sp(sp_fea, sp_xyz_idx, instance_label, n_o)
             # sp_center_contrast_loss = Contrastive_InfoNCE_loss_re_p_fea(re_p_fea, p2sp_idx, c2p_idx_abs, instance_label, o0)
             sp_center_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算sp中心对比损失
-            p2sp_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算p2sp对比损失
-            # p2sp_contrast_loss = infoNCE_loss_1 + infoNCE_loss_2 + infoNCE_loss_3 + infoNCE_loss_4  # 每次迭代都计算p2sp对比损失，新的对比损失，点与k个超点进行对比
+            # p2sp_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算p2sp对比损失
+            p2sp_contrast_loss = infoNCE_loss_1 + infoNCE_loss_2 + infoNCE_loss_3 + infoNCE_loss_4  # 每次迭代都计算p2sp对比损失，新的对比损失，点与k个超点进行对比
             # p2sp_contrast_loss = Contrastive_InfoNCE_loss_p2sp(p_fea, p2sp_idx, c2p_idx_abs, sp_fea, sp_xyz_idx, instance_label, n_o)
 
             # ------------------------------ reconstruct parameters ----------------------------
@@ -1167,7 +1167,7 @@ class SuperPointNet(nn.Module):
             re_p_label = None
 
         # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
-        return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss
+        return final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵
         cluster_idx: b*m 超点中心索引(基于n)
