@@ -1,6 +1,7 @@
 import numpy as np
 import random
 from plyfile import PlyData, PlyElement
+import torch
 
 def partition2ply(filename, xyz, components):
     """write a ply with random colors for each components"""
@@ -72,3 +73,33 @@ def get_components(init_center,pt_center_index,asso, getmax=False, trick=False, 
     #logger.info('len components: {}'.format(len(components)))
     #logger.info('len in_component: {}'.format(len(in_component)))
     return components,in_component,center_com
+
+def perfect_prediction(components,in_component,labels):
+    """assign each superpoint with the majority label"""
+    #print(pred.shape)
+    #print(labels.shape)
+    full_pred = np.zeros((labels.shape[0],),dtype='uint32')
+
+    for i_com in range(len(components)):
+        #print(len(components[i_com]))
+        #te=labels[components[i_com]]
+        #print(te.shape)
+        #label_com = np.argmax(np.bincount(labels[components[i_com]]))
+        label_com = labels[components[i_com],1:].sum(0).argmax()
+        full_pred[components[i_com]]=label_com
+
+
+    return full_pred
+
+def relax_edge_binary(edg_binary, edg_source, edg_target, n_ver, tolerance):
+    if torch.is_tensor(edg_binary):
+        relaxed_binary = edg_binary.cpu().numpy().copy()
+    else:
+        relaxed_binary = edg_binary.copy()
+    transition_vertex = np.full((n_ver,), 0, dtype = 'uint8')
+    for i_tolerance in range(tolerance):
+        transition_vertex[edg_source[relaxed_binary.nonzero()]] = True
+        transition_vertex[edg_target[relaxed_binary.nonzero()]] = True
+        relaxed_binary[transition_vertex[edg_source]] = True
+        relaxed_binary[transition_vertex[edg_target]>0] = True
+    return relaxed_binary

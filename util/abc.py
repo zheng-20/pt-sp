@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import Dataset
 
 from util.voxelize import voxelize
-from util.data_util import sa_create, collate_fn, dataAugment, data_prepare_abc
+from util.data_util import sa_create, collate_fn, dataAugment, data_prepare_abc, data_prepare_abc_v2
 # from util.data_util import data_prepare_v101 as data_prepare
 # import open3d as o3d
 from lib.boundaryops.functions import boundaryops
@@ -48,13 +48,17 @@ class ABC_Dataset(Dataset):
         data_path = os.path.join(self.data_root, item + '.npz')
         data = np.load(data_path)
 
-        coord, normals, boundary, label, semantic, param, F, edges = data['V'],data['N'],data['B'],data['L'],data['S'],data['T_param'],data['F'],data['edges']
-        coord, normals, boundary, label, semantic, param, F, edges = data_prepare_abc(coord, normals, boundary, label, semantic, param, F, edges, voxel_size=self.voxel_size)
+        # coord, normals, boundary, label, semantic, param, F, edges = data['V'],data['N'],data['B'],data['L'],data['S'],data['T_param'],data['F'],data['edges']
+        # coord, normals, boundary, label, semantic, param, F, edges = data_prepare_abc(coord, normals, boundary, label, semantic, param, F, edges, voxel_size=self.voxel_size)
+        # edg_source, edg_target, is_transition用于评估超点定量指标
+        coord, normals, boundary, label, semantic, param, F, edges, edg_source, edg_target, is_transition = data['V'],data['N'],data['B'],data['instance'],data['semantic'],data['T_param'],data['F'],data['edges'],data['source'],data['target'],data['is_transition']
+        coord, normals, boundary, label, semantic, param, F, edges, edg_source, edg_target, is_transition = data_prepare_abc_v2(coord, normals, boundary, label, semantic, param, F, edges, edg_source, edg_target, is_transition, voxel_size=self.voxel_size)
         # coord, normals = dataAugment(coord, normals, False, True, True)
         # coord, feat, label = data[:, 0:3], data[:, 3:6], data[:, 6]
         # coord, feat, label = data_prepare(coord, feat, label, self.split, self.voxel_size, self.voxel_max, self.transform, self.shuffle_index)
 
-        return coord, normals, boundary, label, semantic, param, F, edges, item[:8]
+        # return coord, normals, boundary, label, semantic, param, F, edges, item[:8]
+        return coord, normals, boundary, label, semantic, param, F, edges, item[:8], edg_source, edg_target, is_transition
 
     def __len__(self):
         return round(len(self.data_idx) * self.loop)
