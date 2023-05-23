@@ -12,6 +12,7 @@ checkpoints
 .ccls-cache/
 dist/
 point_transformer.egg-info/
+*.egg-info/
 *.zip
 *.so
 .tox/
