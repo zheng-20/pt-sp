@@ -1,6 +1,6 @@
 DATA:
   data_name: abc
-  data_root: /file/fz20/st_dataset/sp_dataset # Fill in the pre-processed data path (which contains the .npy files)
+  data_root: /data1/fz20/dataset/sp_dataset # Fill in the pre-processed data path (which contains the .npy files)
   test_area: 5
   classes: 10
   fea_dim: 6
@@ -34,7 +34,7 @@ TRAIN:
   max_num_neighbors: 34 # For KPConv
   ratio: 0.25
   k: 16
-  bandwidth: 1.3
+  bandwidth: 0.85
 
   re_xyz_loss: 'mse'
   re_label_loss: 'cel'
@@ -57,8 +57,8 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [0,1,2]
-  workers: 16  # data loader workers
+  train_gpu: [2]
+  workers: 8  # data loader workers
   batch_size: 6  # batch size for training
   batch_size_val: 6  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
@@ -76,7 +76,7 @@ TRAIN:
   weight:  # path to initial weight (default: none)
   resume:  # path to latest checkpoint (default: none)
   evaluate: False  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
-  visual_root: /data1/fz20/project/point-transformer-boundary/exp/abc/v2_0.02sp_n_norm+param+xyz+metric/visual
+  visual_root: 
   eval_freq: 1
 Distributed:
   dist_url: tcp://127.0.0.1:6789

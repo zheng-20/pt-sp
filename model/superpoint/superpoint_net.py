@@ -975,7 +975,7 @@ class SuperPointNet(nn.Module):
         x2 = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3, o3]), o2])[1]
         x1 = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1])[1]
         out = self.cls(x1) # n × classes
-        # primitive_embedding = self.embedding(x1)
+        primitive_embedding = self.embedding(x1)    # n × 32 用于超点均值聚类分割
         # boundary_pred = self.boundary(x1)
 
         # # 可视化特征热力图
@@ -1136,7 +1136,7 @@ class SuperPointNet(nn.Module):
             # normal_loss = point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, o0)
 
             distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
-            # normal_loss = (1 - (1 - distance_weight) * torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()   # 添加距离权重
+            normal_loss = (1 - (1 - distance_weight) * torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()   # 添加距离权重
             # normal_loss = (1 - torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
             sp_center_normal = pointops_sp_v2.gathering_cluster(re_p_normal.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx).transpose(0, 1).contiguous()
@@ -1144,7 +1144,7 @@ class SuperPointNet(nn.Module):
             # normal_consistency_loss = (1 - torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
             normal_consistency_loss = (1 - (1 - distance_weight) * torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()    #加距离权重
             # 法线一致性损失，计算每个点的重建法向量与距离最近的超点中心的重建法向量的余弦相似度，余弦相似度越大，损失越小
-            normal_loss = normal_consistency_loss
+            normal_loss += normal_consistency_loss
 
             # ------------------------------ contrast learning ----------------------------
             # c2p_fea = pointops_sp_v2.grouping(sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs)
@@ -1167,7 +1167,7 @@ class SuperPointNet(nn.Module):
             re_p_label = None
 
         # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
-        return final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss
+        return final_asso, cluster_idx, c2p_idx_abs, out, primitive_embedding, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵
         cluster_idx: b*m 超点中心索引(基于n)

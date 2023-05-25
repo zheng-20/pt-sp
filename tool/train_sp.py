@@ -31,7 +31,7 @@ from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_po
 from util.data_util import collate_fn, collate_fn_limit
 from util import transform as t
 from util.logger import get_logger
-from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou
+from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou, sp_mean_shift_gpu, mean_shift
 from util.sp_util import get_components, partition2ply, perfect_prediction, relax_edge_binary
 from functools import partial
 from util.lr import MultiStepWithWarmup, PolyLR
@@ -333,7 +333,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     # 测试与可视化
     if args.evaluate:
         with torch.no_grad():
-            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
+            loss_val, br, bp, f1 = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
         
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -343,12 +343,14 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info("lr: {}".format(scheduler.get_last_lr()))
 
         # loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
-        loss_train, loss_normal, loss_param, loss_contrast, f1_score = train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler)
+        loss_train, loss_normal, loss_param, loss_contrast, loss_feat, loss_type, f1_score = train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
         is_best = False
         if main_process():
+            writer.add_scalar('feat_loss_train', loss_feat, epoch_log)
+            writer.add_scalar('type_loss_train', loss_type, epoch_log)
             writer.add_scalar('normal_loss_train', loss_normal, epoch_log)
             writer.add_scalar('param_loss_train', loss_param, epoch_log)
             writer.add_scalar('contrast_loss_train', loss_contrast, epoch_log)
@@ -440,8 +442,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     # intersection_meter = AverageMeter()
     # union_meter = AverageMeter()
     # target_meter = AverageMeter()
-    # feat_loss_meter = AverageMeter()
-    # type_loss_meter = AverageMeter()
+    feat_loss_meter = AverageMeter()
+    type_loss_meter = AverageMeter()
     # boundary_loss_meter = AverageMeter()
 
     BR_meter = tnt.meter.AverageValueMeter()    # boundary recall
@@ -473,13 +475,13 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
             onehot_label = label2one_hot(semantic, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            spout, c_idx, c2p_idx_base, rec_xyz, rec_label, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
+            spout, c_idx, c2p_idx_base, type_per_point, primitive_embedding, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
             # loss = criterion(output, target)
-            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
-            # type_loss = criterion(type_per_point, semantic)
+            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            type_loss = criterion(type_per_point, semantic)
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
             # re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz.squeeze(0), coord.transpose(0,1).contiguous())    # compact loss
@@ -496,7 +498,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
 
             # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss + sp_center_contrast_loss
-            loss = re_xyz_loss + normal_loss + param_loss + p2sp_contrast_loss
+            loss = re_xyz_loss + normal_loss + param_loss + p2sp_contrast_loss + feat_loss + type_loss
             # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss + p2sp_contrast_loss
             # loss = re_xyz_loss + normal_loss
             # loss = normal_loss
@@ -513,14 +515,33 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                 # init_center = c_idx[:sp_offset[0]].cpu().numpy()
                 pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
                 # label_ = label[:offset[0]].cpu().numpy()
+                p_fea_ = p_fea[:offset[0]]
+                primitive_embedding_ = primitive_embedding[:offset[0]]
             else:
                 txyz = coord[offset[bid-1]:offset[bid]].cpu().numpy()
                 spout_ = spout[offset[bid-1]:offset[bid]].detach().cpu().numpy()
                 # init_center = c_idx[sp_offset[bid-1]:sp_offset[bid]].cpu().numpy()
                 pt_center_index = c2p_idx_base[offset[bid-1]:offset[bid]].cpu().numpy()
                 # label_ = label[offset[bid-1]:offset[bid]].cpu().numpy()
+                p_fea_ = p_fea[offset[bid-1]:offset[bid]]
+                primitive_embedding_ = primitive_embedding[offset[bid-1]:offset[bid]]
             pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
-            pred_components = [x[0] for x in pred_components]
+            # pred_components = [x[0] for x in pred_components]
+            # partition2ply('./sp_test.ply', txyz, pred_components)
+            # # 超点均值聚类
+            # pred_sp = torch.from_numpy(pred_in_component).to(primitive_embedding_.device)
+            # p2sp_matrix = label2one_hot(pred_sp, pred_sp.max()+1).squeeze()
+            # sp_cnt = torch.sum(p2sp_matrix, dim=1)
+            # sp_fea = torch.matmul(p2sp_matrix, primitive_embedding_) / sp_cnt.unsqueeze(1)
+            # cluster_pred = sp_mean_shift_gpu(sp_fea, bandwidth = 2)
+            # for i in range(cluster_pred.shape[0]):
+            #     pred_in_component[pred_in_component == i] = cluster_pred[i]
+            # coms=np.unique(pred_in_component)
+            # components = []
+            # for i in range(len(coms)):
+            #     te=np.where(pred_in_component==coms[i])
+            #     components.append(te)
+            # partition2ply('./prim_test.ply', txyz, components)
 
             pred_transition = pred_in_component[tedg_source] != pred_in_component[tedg_target]
             
@@ -602,6 +623,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
         # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        feat_loss_meter.update(feat_loss.item(), n)
+        type_loss_meter.update(type_loss.item(), n)
         loss_re_xyz_meter.update(re_xyz_loss.item(), n)
         loss_re_label_meter.update(re_label_loss.item(), n)
         loss_re_sp_meter.update(re_sp_loss.item(), n)
@@ -677,6 +700,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                         'LS_param {loss_param_meter.val:.4f} '
                         'LS_sp_contrast {loss_sp_contrast_meter.val:.4f} '
                         'LS_p2sp_contrast {loss_p2sp_contrast_meter.val:.4f} '
+                        'LS_feat {feat_loss_meter.val:.4f} '
+                        'LS_type {type_loss_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '
                         'lr {lr} '.format(epoch+1, args["epochs"], i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
@@ -688,10 +713,14 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                                                           loss_param_meter=loss_param_meter,
                                                           loss_sp_contrast_meter=loss_sp_contrast_meter,
                                                           loss_p2sp_contrast_meter=loss_p2sp_contrast_meter,
+                                                          feat_loss_meter=feat_loss_meter,
+                                                          type_loss_meter=type_loss_meter,
                                                           loss_meter=loss_meter,
                                                           lr=lr))
 
         if main_process():
+            writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
+            writer.add_scalar('type_loss_train_batch', type_loss_meter.val, current_iter)
             writer.add_scalar('norm_loss_train_batch', loss_norm_meter.val, current_iter)
             writer.add_scalar('param_loss_train_batch', loss_param_meter.val, current_iter)
             writer.add_scalar('sp_contrast_loss_train_batch', loss_sp_contrast_meter.val, current_iter)
@@ -723,7 +752,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
     # if main_process():
     #     logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
-    return loss_meter.avg, loss_norm_meter.avg, loss_param_meter.avg, loss_p2sp_contrast_meter.avg, f1_score
+    return loss_meter.avg, loss_norm_meter.avg, loss_param_meter.avg, loss_p2sp_contrast_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, f1_score
 
     # return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
@@ -746,6 +775,9 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
     # boundary_loss_meter = AverageMeter()
     # s_iou_meter = AverageMeter()
     # type_iou_meter = AverageMeter()
+
+    BR_meter = tnt.meter.AverageValueMeter()    # boundary recall
+    BP_meter = tnt.meter.AverageValueMeter()    # boundary precision
 
     torch.cuda.empty_cache()
 
@@ -777,7 +809,7 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
             onehot_label = label2one_hot(semantic, args['classes'])
-            spout, c_idx, c2p_idx, c2p_idx_base, output, rec_xyz, rec_label, fea_dist, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
+            spout, c_idx, c2p_idx_base, type_per_point, primitive_embedding, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
             re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
             if args['re_label_loss'] == 'cel':
                 # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
@@ -794,42 +826,78 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             loss = re_xyz_loss + normal_loss
             # loss = re_xyz_loss
 
-        # 可视化超点分割结果
-        if args.visual:
-            for j in range(offset.shape[0]):
-                init_center = c_idx.cpu().numpy()
-                filename_ = filename[j]
-                if j == 0:
-                    # init_center = c_idx[:sp_offset[0]].cpu().numpy()
-                    xyz = coord[:offset[0]].cpu().numpy()
-                    spout_ = spout[:offset[0]].detach().cpu().numpy()
-                    pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
-                else:
-                    # init_center = c_idx[sp_offset[j-1]:sp_offset[j]].cpu().numpy()
-                    xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
-                    spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
-                    pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
-                pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
-                # time_tag = time.strftime("%Y%m%d-%H%M%S")
+
+        for bid in range(offset.shape[0]):
+            tedg_source = edg_source[bid]
+            tedg_target = edg_target[bid]
+            tis_transition = is_transition[bid].numpy()
+            init_center = c_idx.cpu().numpy()
+            filename_ = filename[bid]
+            if bid == 0:
+                txyz = coord[:offset[0]].cpu().numpy()
+                spout_ = spout[:offset[0]].detach().cpu().numpy()
+                pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
+                p_fea_ = p_fea[:offset[0]]
+                primitive_embedding_ = primitive_embedding[:offset[0]]
+            else:
+                txyz = coord[offset[bid-1]:offset[bid]].cpu().numpy()
+                spout_ = spout[offset[bid-1]:offset[bid]].detach().cpu().numpy()
+                pt_center_index = c2p_idx_base[offset[bid-1]:offset[bid]].cpu().numpy()
+                p_fea_ = p_fea[offset[bid-1]:offset[bid]]
+                primitive_embedding_ = primitive_embedding[offset[bid-1]:offset[bid]]
+            pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
+            # 可视化
+            if args.visual:
+                # 超点分割结果
                 root_name = args.visual_root + '/{}.ply'.format(filename_)
-                partition2ply(root_name, xyz, pred_components)
+                partition2ply(root_name, txyz, pred_components)
+                # 超点均值聚类,基元分割结果
+                pred_sp = torch.from_numpy(pred_in_component).to(primitive_embedding_.device)
+                p2sp_matrix = label2one_hot(pred_sp, pred_sp.max()+1).squeeze()
+                sp_cnt = torch.sum(p2sp_matrix, dim=1)
+                sp_fea = torch.matmul(p2sp_matrix, primitive_embedding_) / sp_cnt.unsqueeze(1)
+                cluster_pred = sp_mean_shift_gpu(sp_fea, bandwidth = args.bandwidth)
+                for i in range(cluster_pred.shape[0]):
+                    pred_in_component[pred_in_component == i] = cluster_pred[i]
+                coms=np.unique(pred_in_component)
+                components = []
+                for i in range(len(coms)):
+                    te=np.where(pred_in_component==coms[i])
+                    components.append(te)
+                prim_root_name = args.visual_root + '/{}_prim.ply'.format(filename_)
+                partition2ply(prim_root_name, txyz, components)
 
-        output = output.max(1)[1]
+            # 计算指标
+            pred_transition = pred_in_component[tedg_source] != pred_in_component[tedg_target]
+            
+            # full_pred = perfect_prediction(pred_components, pred_in_component, label_)
+
+            if np.sum(tis_transition) > 0:
+                BR_meter.add((tis_transition.sum()) * compute_boundary_recall(tis_transition, 
+                            relax_edge_binary(pred_transition, tedg_source, 
+                            tedg_target, txyz.shape[0], args['BR_tolerance'])),
+                            n=tis_transition.sum())
+                BP_meter.add((pred_transition.sum()) * compute_boundary_precision(
+                            relax_edge_binary(tis_transition, tedg_source, 
+                            tedg_target, txyz.shape[0], args['BR_tolerance']), 
+                            pred_transition),n=pred_transition.sum())
+
+        # output = output.max(1)[1]
         n = coord.size(0)
-        if args.multiprocessing_distributed:
-            loss *= n
-            count = target.new_tensor([n], dtype=torch.long)
-            dist.all_reduce(loss), dist.all_reduce(count)
-            n = count.item()
-            loss /= n
+        # if args.multiprocessing_distributed:
+        #     loss *= n
+        #     count = target.new_tensor([n], dtype=torch.long)
+        #     dist.all_reduce(loss), dist.all_reduce(count)
+        #     n = count.item()
+        #     loss /= n
 
-        intersection, union, target = intersectionAndUnionGPU(output, semantic, args.classes, args.ignore_label)
-        if args.multiprocessing_distributed:
-            dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+        # intersection, union, target = intersectionAndUnionGPU(output, semantic, args.classes, args.ignore_label)
+        # if args.multiprocessing_distributed:
+        #     dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
+        # intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+        # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
-        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         loss_re_xyz_meter.update(re_xyz_loss.item(), n)
         loss_re_label_meter.update(re_label_loss.item(), n)
         loss_re_sp_meter.update(re_sp_loss.item(), n)
@@ -861,31 +929,36 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
                         'LS_re_label {loss_re_label_meter.val:.4f} '
                         'LS_re_sp {loss_re_sp_meter.val:.4f} '
                         'LS_norm {loss_norm_meter.val:.4f} '
-                        'Loss {loss_meter.val:.4f} '
-                        'Accuracy {accuracy:.4f}.'.format(i + 1, len(val_loader),
+                        'Loss {loss_meter.val:.4f} '.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
                                                           loss_re_xyz_meter=loss_re_xyz_meter,
                                                           loss_re_label_meter=loss_re_label_meter,
                                                           loss_re_sp_meter=loss_re_sp_meter,
                                                           loss_norm_meter=loss_norm_meter,
-                                                          loss_meter=loss_meter,
-                                                          accuracy=accuracy))
+                                                          loss_meter=loss_meter))
 
-    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    mIoU = np.mean(iou_class)
-    mAcc = np.mean(accuracy_class)
-    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
-
+    br = BR_meter.value()[0]
+    bp = BP_meter.value()[0]
+    f1_score = 2 * br * bp / (br + bp + 1e-10)
     if main_process():
-        logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
-        for i in range(args.classes):
-            logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
-        # logger.info('Val result: Seg_mIoU/Type_mIoU {:.4f}/{:.4f}.'.format(s_iou_meter.avg, type_iou_meter.avg))
+        logger.info('Val result: BR/BP/F1-score {:.4f}/{:.4f}/{:.4f}'.format(
+                    br, bp, f1_score))
+
+    # iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    # accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
+    # mIoU = np.mean(iou_class)
+    # mAcc = np.mean(accuracy_class)
+    # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+
+    # if main_process():
+    #     logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
+    #     for i in range(args.classes):
+    #         logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
+    #     # logger.info('Val result: Seg_mIoU/Type_mIoU {:.4f}/{:.4f}.'.format(s_iou_meter.avg, type_iou_meter.avg))
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
 
-    return loss_meter.avg, mIoU, mAcc, allAcc
+    return loss_meter.avg, br, bp, f1_score
     # return s_iou_meter.avg, type_iou_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 

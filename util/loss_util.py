@@ -6,6 +6,7 @@ import time
 import math
 from torch.autograd import Variable
 from lapsolver import solve_dense
+from sklearn.cluster import MeanShift
 
 def npy(var):
     return var.data.cpu().numpy()
@@ -78,6 +79,25 @@ def compute_embedding_loss(pred_feat, gt_label, offset, t_pull=0.5, t_push=1.5):
     push_loss = push_loss / len(offset)
     loss = pull_loss + push_loss
     return loss, pull_loss, push_loss
+
+def mean_shift(x, bandwidth):
+    # x: [N, f]
+    N, c = x.shape
+    # IDX = torch.zeros(b, N).to(x.device).long()
+    ms = MeanShift(bandwidth=bandwidth, bin_seeding=False, n_jobs=4)
+    x_np = x.data.cpu().numpy()
+    ms.fit(x_np)
+    IDX = ms.labels_
+    # for i in range(b):
+    #     #print ('Mean shift clustering, might take some time ...')
+    #     #tic = time.time()
+    #     ms.fit(x_np[i])
+    #     #print ('time for clustering', time.time() - tic)
+    #     IDX[i] = v(ms.labels_)
+    #     cluster_centers = ms.cluster_centers_
+
+    #     num_clusters = cluster_centers.shape[0]
+    return IDX
 
 class MeanShift_GPU():
     ''' Do meanshift clustering with GPU support'''
@@ -206,6 +226,15 @@ def mean_shift_gpu(x, offset, bandwidth):
         # num_clusters = cluster_centers.shape[0]
         # print(num_clusters)
     return IDX
+
+def sp_mean_shift_gpu(x, batch_size=50, bandwidth=1.3):
+    # x: [N, f]
+    N, c = x.shape
+    IDX = np.zeros(N, dtype=np.int)
+    ms = MeanShift_GPU(bandwidth=bandwidth, batch_size=batch_size)
+    labels, centers = ms.fit(x)
+    # IDX = labels
+    return labels
 
 def mean_IOU_primitive_segment(matching, predicted_labels, labels, pred_prim, gt_prim):
 	"""
