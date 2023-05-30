@@ -42,6 +42,11 @@ TRAIN:
   w_re_xyz_loss: 0.1
   w_re_label_loss: 1.0
   w_re_sp_loss: 1.0
+  w_re_param_loss: 1.0
+  w_re_normal_loss: 1.0
+  w_normal_consistency_loss: 0.1
+  w_contrastive_loss: 1.0
+  w_type_loss: 1.0
   BR_tolerance: 1
 
   # training
@@ -57,9 +62,9 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [2]
+  train_gpu: [1]
   workers: 8  # data loader workers
-  batch_size: 6  # batch size for training
+  batch_size: 3  # batch size for training
   batch_size_val: 6  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
   epochs: 200

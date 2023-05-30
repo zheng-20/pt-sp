@@ -906,6 +906,8 @@ class SuperPointNet(nn.Module):
         self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], k))
         self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
         self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+        # self.spmlp = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+        self.parameter = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 22))
 
         # self.learn_SLIC_calc_1 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
         #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
@@ -974,8 +976,9 @@ class SuperPointNet(nn.Module):
         x3 = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4, o4]), o3])[1]
         x2 = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3, o3]), o2])[1]
         x1 = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1])[1]
-        out = self.cls(x1) # n × classes
-        primitive_embedding = self.embedding(x1)    # n × 32 用于超点均值聚类分割
+        # out = self.cls(x1) # n × classes
+        # parameter = self.parameter(x1) # n × 3
+        # primitive_embedding = self.embedding(x1)    # n × 32 用于超点均值聚类分割
         # boundary_pred = self.boundary(x1)
 
         # # 可视化特征热力图
@@ -1042,6 +1045,7 @@ class SuperPointNet(nn.Module):
         # sp_lab: b x m x class 每个超点中点label数量
 
         p_fea = x1  # n × 32
+        # p_fea = self.spmlp(x1)
         sp_fea = torch.matmul(asso_matrix, x1) / sp_nei_cnt
         # sp_fea = init_fea(p_fea, asso_matrix, sp_nei_cnt, o0)
         # sp_fea: b × m × 32   initial superpoints features
@@ -1135,52 +1139,58 @@ class SuperPointNet(nn.Module):
 
             # normal_loss = point_normal_similarity_loss(normals, p2sp_idx, c2p_idx_abs, o0)
 
-            distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
-            normal_loss = (1 - (1 - distance_weight) * torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()   # 添加距离权重
+            normal_distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
+            # normal_loss = (1 - (1 - distance_weight) * torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()   # 添加距离权重
             # normal_loss = (1 - torch.sum(normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
             sp_center_normal = pointops_sp_v2.gathering_cluster(re_p_normal.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx).transpose(0, 1).contiguous()
             # sp_center_normal: m x 3 距离每个点最近的超点中心的重建法向量
             # normal_consistency_loss = (1 - torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()
-            normal_consistency_loss = (1 - (1 - distance_weight) * torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()    #加距离权重
+            # normal_consistency_loss = (1 - (1 - distance_weight) * torch.sum(sp_center_normal * re_p_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(re_p_normal, dim=1, keepdim=False) + 1e-8)).mean()    #加距离权重
             # 法线一致性损失，计算每个点的重建法向量与距离最近的超点中心的重建法向量的余弦相似度，余弦相似度越大，损失越小
-            normal_loss += normal_consistency_loss
+            # normal_loss += 0.1 * normal_consistency_loss
 
             # ------------------------------ contrast learning ----------------------------
             # c2p_fea = pointops_sp_v2.grouping(sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs)
             # re_p_fea = torch.sum(c2p_fea * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
             # # sp_center_contrast_loss = Contrastive_InfoNCE_loss_sp(sp_fea, sp_xyz_idx, instance_label, n_o)
             # sp_center_contrast_loss = Contrastive_InfoNCE_loss_re_p_fea(re_p_fea, p2sp_idx, c2p_idx_abs, instance_label, o0)
-            sp_center_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算sp中心对比损失
+            # sp_center_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算sp中心对比损失
             # p2sp_contrast_loss = torch.tensor(0.0, device=normal_loss.device)  # 暂时不计算p2sp对比损失
-            p2sp_contrast_loss = infoNCE_loss_1 + infoNCE_loss_2 + infoNCE_loss_3 + infoNCE_loss_4  # 每次迭代都计算p2sp对比损失，新的对比损失，点与k个超点进行对比
+            contrastive_loss = infoNCE_loss_1 + infoNCE_loss_2 + infoNCE_loss_3 + infoNCE_loss_4  # 每次迭代都计算p2sp对比损失，新的对比损失，点与k个超点进行对比
             # p2sp_contrast_loss = Contrastive_InfoNCE_loss_p2sp(p_fea, p2sp_idx, c2p_idx_abs, sp_fea, sp_xyz_idx, instance_label, n_o)
 
             # ------------------------------ reconstruct parameters ----------------------------
             sp_param = calc_sp_fea_v2(final_asso, param, 6, c2p_idx, cluster_idx, o0, n_o)
             c2p_param = pointops_sp_v2.grouping(sp_param.transpose(0, 1).contiguous(), c2p_idx_abs)
             re_p_param = torch.sum(c2p_param * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
-            param_loss = torch.mean(torch.norm(re_p_param - param, p=2, dim=1, keepdim=False))
+            # param_loss = torch.mean(torch.norm(re_p_param - param, p=2, dim=1, keepdim=False))
 
         else:
             re_p_xyz = None
             re_p_label = None
 
-        # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, out, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
-        return final_asso, cluster_idx, c2p_idx_abs, out, primitive_embedding, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss
+        type_per_point = self.cls(x1) # n × classes
+        # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+        return final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
         '''
-        final_asso: b*n*6 点与最近6个超点中心关联矩阵
-        cluster_idx: b*m 超点中心索引(基于n)
-        c2p_idx: b*n*6 每点最近超点中心索引(基于n)
-        c2p_idx_abs: b*n*6 每点最近超点中心索引(基于m)
-        out: b*classes*n 每点语义类别得分, 用于语义类别loss
+        final_asso: b*n*6 点与最近6个超点中心关联矩阵, 用于计算评价指标与可视化
+        cluster_idx: b*m 超点中心索引(基于n), 用于计算评价指标与可视化
+        # c2p_idx: b*n*6 每点最近超点中心索引(基于n)
+        c2p_idx_abs: b*n*6 每点最近超点中心索引(基于m), 用于计算评价指标与可视化
+        type_per_point: b*classes*n 每点语义类别得分, 用于语义类别loss
         re_p_xyz: b x 3 x n 每个点最近的超点中心坐标, 用于compact loss
         re_p_label: b*classes*n 重建每点的label vector, 用于point label loss
-        fea_dist: b*n*6
+        # fea_dist: b*n*6
         p_fea: b*n*64 每点特征
         sp_label: b*m*13 根据关联矩阵生成超点中心的加权label向量, 用于superpoint label loss
         sp_pseudo_lab: b*m 超点中心伪标签, 投票生成
         sp_pseudo_lab_onehot: b*classes*m 超点中心伪标签,独热向量, 用于superpoint label loss
+        re_p_normal: 3*n 重建每点的法向量, 用于normal loss
+        sp_center_normal: 3*m 重建每个超点中心的法向量, 用于normal consistency loss
+        normal_distance_weight: 距离权重, 用于normal and consistency loss
+        re_p_param: 22*n 重建每点的参数, 用于param loss
+        contrastive_loss: 对比损失
         '''
 
 

@@ -343,17 +343,20 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info("lr: {}".format(scheduler.get_last_lr()))
 
         # loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
-        loss_train, loss_normal, loss_param, loss_contrast, loss_feat, loss_type, f1_score = train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler)
+        loss_train, loss_type, loss_re_xyz, loss_re_label, loss_re_sp, loss_re_norm, loss_norm_consis, loss_re_param, loss_p2sp_contrast, f1_score = train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
         is_best = False
         if main_process():
-            writer.add_scalar('feat_loss_train', loss_feat, epoch_log)
             writer.add_scalar('type_loss_train', loss_type, epoch_log)
-            writer.add_scalar('normal_loss_train', loss_normal, epoch_log)
-            writer.add_scalar('param_loss_train', loss_param, epoch_log)
-            writer.add_scalar('contrast_loss_train', loss_contrast, epoch_log)
+            writer.add_scalar('re_xyz_loss_train', loss_re_xyz, epoch_log)
+            writer.add_scalar('re_label_loss_train', loss_re_label, epoch_log)
+            writer.add_scalar('re_sp_loss_train', loss_re_sp, epoch_log)
+            writer.add_scalar('re_norm_loss_train', loss_re_norm, epoch_log)
+            writer.add_scalar('norm_consis_loss_train', loss_norm_consis, epoch_log)
+            writer.add_scalar('re_param_loss_train', loss_re_param, epoch_log)
+            writer.add_scalar('p2sp_contrast_loss_train', loss_p2sp_contrast, epoch_log)
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('f1_score', f1_score, epoch_log)
             # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
@@ -434,16 +437,18 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     loss_re_xyz_meter = AverageMeter()
     loss_re_label_meter = AverageMeter()
     loss_re_sp_meter = AverageMeter()
-    loss_norm_meter = AverageMeter()
-    loss_sp_contrast_meter = AverageMeter()
+    loss_re_norm_meter = AverageMeter()
+    loss_norm_consis_meter = AverageMeter()
+    # loss_sp_contrast_meter = AverageMeter()
     loss_p2sp_contrast_meter = AverageMeter()
-    loss_param_meter = AverageMeter()
+    # loss_param_meter = AverageMeter()
+    loss_re_param_meter = AverageMeter()
     loss_meter = AverageMeter()
     # intersection_meter = AverageMeter()
     # union_meter = AverageMeter()
     # target_meter = AverageMeter()
-    feat_loss_meter = AverageMeter()
-    type_loss_meter = AverageMeter()
+    # feat_loss_meter = AverageMeter()
+    loss_type_meter = AverageMeter()
     # boundary_loss_meter = AverageMeter()
 
     BR_meter = tnt.meter.AverageValueMeter()    # boundary recall
@@ -475,12 +480,14 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
             onehot_label = label2one_hot(semantic, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            spout, c_idx, c2p_idx_base, type_per_point, primitive_embedding, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
+            spout, c_idx, c2p_idx_base, type_per_point, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+                 w_normal_dis, rec_param, contrastive_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
             # loss = criterion(output, target)
-            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            # param_loss = torch.mean(torch.norm(param - parameter, p=2, dim=1, keepdim=False))
             type_loss = criterion(type_per_point, semantic)
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
@@ -496,12 +503,18 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab) # superpoint label loss
             elif args['re_sp_loss'] == 'mse':
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
+            
+            # 重建法线损失以及法线一致性损失
+            re_normal_loss = args['w_re_normal_loss'] * (1 - (1 - w_normal_dis) * torch.sum(normals * rec_normal, dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            normal_consistency_loss = args['w_normal_consistency_loss'] * (1 - (1 - w_normal_dis) * torch.sum(sp_center_normal * rec_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
-            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss + sp_center_contrast_loss
-            loss = re_xyz_loss + normal_loss + param_loss + p2sp_contrast_loss + feat_loss + type_loss
-            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss + p2sp_contrast_loss
-            # loss = re_xyz_loss + normal_loss
-            # loss = normal_loss
+            # 重建参数损失
+            re_param_loss = args['w_re_param_loss'] * torch.mean(torch.norm(rec_param - param, p=2, dim=1, keepdim=False))
+
+            # 对比损失
+            contrastive_loss = args['w_contrastive_loss'] * contrastive_loss
+
+            loss = re_xyz_loss + re_label_loss + re_sp_loss + type_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss
 
         # calculate superpoint metrics
         for bid in range(offset.shape[0]):
@@ -516,7 +529,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                 pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
                 # label_ = label[:offset[0]].cpu().numpy()
                 p_fea_ = p_fea[:offset[0]]
-                primitive_embedding_ = primitive_embedding[:offset[0]]
+                # primitive_embedding_ = primitive_embedding[:offset[0]]
             else:
                 txyz = coord[offset[bid-1]:offset[bid]].cpu().numpy()
                 spout_ = spout[offset[bid-1]:offset[bid]].detach().cpu().numpy()
@@ -524,7 +537,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                 pt_center_index = c2p_idx_base[offset[bid-1]:offset[bid]].cpu().numpy()
                 # label_ = label[offset[bid-1]:offset[bid]].cpu().numpy()
                 p_fea_ = p_fea[offset[bid-1]:offset[bid]]
-                primitive_embedding_ = primitive_embedding[offset[bid-1]:offset[bid]]
+                # primitive_embedding_ = primitive_embedding[offset[bid-1]:offset[bid]]
             pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
             # pred_components = [x[0] for x in pred_components]
             # partition2ply('./sp_test.ply', txyz, pred_components)
@@ -623,33 +636,37 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
         # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
-        feat_loss_meter.update(feat_loss.item(), n)
-        type_loss_meter.update(type_loss.item(), n)
-        loss_re_xyz_meter.update(re_xyz_loss.item(), n)
-        loss_re_label_meter.update(re_label_loss.item(), n)
-        loss_re_sp_meter.update(re_sp_loss.item(), n)
-        loss_norm_meter.update(normal_loss.item(), n)
-        loss_param_meter.update(param_loss.item(), n)
-        loss_sp_contrast_meter.update(sp_center_contrast_loss.item(), n)
-        loss_p2sp_contrast_meter.update(p2sp_contrast_loss.item(), n)
-        loss_meter.update(loss.item(), n)
         
         # # All Reduce loss
         if args.multiprocessing_distributed:
+            dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(re_xyz_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(re_label_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(re_sp_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(normal_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(param_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(sp_center_contrast_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(p2sp_contrast_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_normal_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(normal_consistency_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_param_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(contrastive_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(loss.div_(torch.cuda.device_count()))
         #     dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
-        #     dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
         #     dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
         # feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
         # feat_loss_meter.update(feat_loss_.item())
         # type_loss_meter.update(type_loss_.item())
         # boundary_loss_meter.update(boundary_loss_.item())
+        # feat_loss_meter.update(feat_loss.item(), n)
+        loss_type_meter.update(type_loss.item(), n)
+        loss_re_xyz_meter.update(re_xyz_loss.item(), n)
+        loss_re_label_meter.update(re_label_loss.item(), n)
+        loss_re_sp_meter.update(re_sp_loss.item(), n)
+        loss_re_norm_meter.update(re_normal_loss.item(), n)
+        loss_norm_consis_meter.update(normal_consistency_loss.item(), n)
+        loss_re_param_meter.update(re_param_loss.item(), n)
+        # loss_param_meter.update(param_loss.item(), n)
+        # loss_sp_contrast_meter.update(sp_center_contrast_loss.item(), n)
+        loss_p2sp_contrast_meter.update(contrastive_loss.item(), n)
+        loss_meter.update(loss.item(), n)
+
         batch_time.update(time.time() - end)
         end = time.time()
 
@@ -693,37 +710,41 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
+                        'LS_type {loss_type_meter.val:.4f} '
                         'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
                         'LS_re_label {loss_re_label_meter.val:.4f} '
                         'LS_re_sp {loss_re_sp_meter.val:.4f} '
-                        'LS_norm {loss_norm_meter.val:.4f} '
-                        'LS_param {loss_param_meter.val:.4f} '
-                        'LS_sp_contrast {loss_sp_contrast_meter.val:.4f} '
+                        'LS_re_norm {loss_re_norm_meter.val:.4f} '
+                        'LS_norm_consis {loss_norm_consis_meter.val:.4f} '
+                        'LS_re_param {loss_re_param_meter.val:.4f} '
+                        # 'LS_sp_contrast {loss_sp_contrast_meter.val:.4f} '
                         'LS_p2sp_contrast {loss_p2sp_contrast_meter.val:.4f} '
-                        'LS_feat {feat_loss_meter.val:.4f} '
-                        'LS_type {type_loss_meter.val:.4f} '
+                        # 'LS_feat {feat_loss_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '
                         'lr {lr} '.format(epoch+1, args["epochs"], i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
+                                                          loss_type_meter=loss_type_meter,
                                                           loss_re_xyz_meter=loss_re_xyz_meter,
                                                           loss_re_label_meter=loss_re_label_meter,
                                                           loss_re_sp_meter=loss_re_sp_meter,
-                                                          loss_norm_meter=loss_norm_meter,
-                                                          loss_param_meter=loss_param_meter,
-                                                          loss_sp_contrast_meter=loss_sp_contrast_meter,
+                                                          loss_re_norm_meter=loss_re_norm_meter,
+                                                          loss_norm_consis_meter=loss_norm_consis_meter,
+                                                          loss_re_param_meter=loss_re_param_meter,
                                                           loss_p2sp_contrast_meter=loss_p2sp_contrast_meter,
-                                                          feat_loss_meter=feat_loss_meter,
-                                                          type_loss_meter=type_loss_meter,
                                                           loss_meter=loss_meter,
                                                           lr=lr))
 
         if main_process():
-            writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
-            writer.add_scalar('type_loss_train_batch', type_loss_meter.val, current_iter)
-            writer.add_scalar('norm_loss_train_batch', loss_norm_meter.val, current_iter)
-            writer.add_scalar('param_loss_train_batch', loss_param_meter.val, current_iter)
-            writer.add_scalar('sp_contrast_loss_train_batch', loss_sp_contrast_meter.val, current_iter)
+            # writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
+            writer.add_scalar('type_loss_train_batch', loss_type_meter.val, current_iter)
+            writer.add_scalar('re_xyz_loss_train_batch', loss_re_xyz_meter.val, current_iter)
+            writer.add_scalar('re_label_loss_train_batch', loss_re_label_meter.val, current_iter)
+            writer.add_scalar('re_sp_loss_train_batch', loss_re_sp_meter.val, current_iter)
+            writer.add_scalar('re_norm_loss_train_batch', loss_re_norm_meter.val, current_iter)
+            writer.add_scalar('norm_consis_loss_train_batch', loss_norm_consis_meter.val, current_iter)
+            writer.add_scalar('re_param_loss_train_batch', loss_re_param_meter.val, current_iter)
+            # writer.add_scalar('param_loss_train_batch', loss_param_meter.val, current_iter)
             writer.add_scalar('p2sp_contrast_loss_train_batch', loss_p2sp_contrast_meter.val, current_iter)
             writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
             # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
@@ -752,7 +773,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
     # if main_process():
     #     logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
-    return loss_meter.avg, loss_norm_meter.avg, loss_param_meter.avg, loss_p2sp_contrast_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, f1_score
+    return loss_meter.avg, loss_type_meter.avg, loss_re_xyz_meter.avg, loss_re_label_meter.avg, loss_re_sp_meter.avg, loss_re_norm_meter.avg, loss_norm_consis_meter.avg, loss_re_param_meter.avg, loss_p2sp_contrast_meter.avg, f1_score
 
     # return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
