@@ -906,6 +906,7 @@ class SuperPointNet(nn.Module):
         self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], k))
         self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
         self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+        self.embedding64 = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 64))
         # self.spmlp = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
         self.parameter = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 22))
 
@@ -1171,8 +1172,9 @@ class SuperPointNet(nn.Module):
             re_p_label = None
 
         type_per_point = self.cls(x1) # n × classes
+        embedding = self.embedding64(x1) # n × 128
         # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
-        return final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+        return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵, 用于计算评价指标与可视化
         cluster_idx: b*m 超点中心索引(基于n), 用于计算评价指标与可视化

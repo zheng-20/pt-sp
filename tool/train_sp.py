@@ -35,6 +35,7 @@ from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou, 
 from util.sp_util import get_components, partition2ply, perfect_prediction, relax_edge_binary
 from functools import partial
 from util.lr import MultiStepWithWarmup, PolyLR
+from util.abc_util import construction_affinity_matrix_type_sp, find_closest_xyz, npy, compute_entropy_sp
 
 
 def get_parser():
@@ -123,7 +124,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
-    from model.pointtransformer.pointtransformer_seg import BoundaryNet as BoundaryModel
+    # from model.pointtransformer.pointtransformer_seg import BoundaryNet as BoundaryModel
     if args.arch == 'pointtransformer_seg_repro':
         from model.pointtransformer.pointtransformer_seg import pointtransformer_seg_repro as Model
     elif args.arch == 'pointtransformer_primitive_seg_repro':
@@ -458,7 +459,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
-    print('$'*10)
+    if args.multiprocessing_distributed:
+        print('$'*10)
 
     for i, (coord, normals, boundary, label, semantic, param, offset, edges, filename, edg_source, edg_target, is_transition) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
@@ -480,13 +482,13 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
             onehot_label = label2one_hot(semantic, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            spout, c_idx, c2p_idx_base, type_per_point, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+            primitive_embedding, spout, c_idx, c2p_idx_base, type_per_point, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
                  w_normal_dis, rec_param, contrastive_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
             # loss = criterion(output, target)
-            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             # param_loss = torch.mean(torch.norm(param - parameter, p=2, dim=1, keepdim=False))
             type_loss = criterion(type_per_point, semantic)
             # boundary_loss = criterion(boundary_pred, boundary)
@@ -514,7 +516,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             # 对比损失
             contrastive_loss = args['w_contrastive_loss'] * contrastive_loss
 
-            loss = re_xyz_loss + re_label_loss + re_sp_loss + type_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss
+            # 总loss
+            loss = feat_loss + re_xyz_loss + re_label_loss + re_sp_loss + type_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss
 
         # calculate superpoint metrics
         for bid in range(offset.shape[0]):
@@ -786,11 +789,15 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
     loss_re_xyz_meter = AverageMeter()
     loss_re_label_meter = AverageMeter()
     loss_re_sp_meter = AverageMeter()
-    loss_norm_meter = AverageMeter()
+    loss_re_norm_meter = AverageMeter()
+    loss_norm_consis_meter = AverageMeter()
+    loss_p2sp_contrast_meter = AverageMeter()
+    loss_re_param_meter = AverageMeter()
+    loss_type_meter = AverageMeter()
     loss_meter = AverageMeter()
-    intersection_meter = AverageMeter()
-    union_meter = AverageMeter()
-    target_meter = AverageMeter()
+    # intersection_meter = AverageMeter()
+    # union_meter = AverageMeter()
+    # target_meter = AverageMeter()
     # feat_loss_meter = AverageMeter()
     # type_loss_meter = AverageMeter()
     # boundary_loss_meter = AverageMeter()
@@ -808,8 +815,10 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
     for i, (coord, normals, boundary, label, semantic, param, offset, edges, filename, edg_source, edg_target, is_transition) in enumerate(val_loader):
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
+        # coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+        #             label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
+        coord, normals, label, semantic, param, offset = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
 
         if semantic.shape[-1] == 1:
             semantic = semantic[:, 0]  # for cls
@@ -830,7 +839,9 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
             onehot_label = label2one_hot(semantic, args['classes'])
-            spout, c_idx, c2p_idx_base, type_per_point, primitive_embedding, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss, sp_center_contrast_loss, p2sp_contrast_loss, param_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
+            primitive_embedding, spout, c_idx, c2p_idx_base, type_per_point, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+                 w_normal_dis, rec_param, contrastive_loss = model([coord, normals, offset], onehot_label, semantic, label, param) # superpoint
+            type_loss = criterion(type_per_point, semantic)
             re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
             if args['re_label_loss'] == 'cel':
                 # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
@@ -843,11 +854,20 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             elif args['re_sp_loss'] == 'mse':
                 re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
             
-            # loss = re_xyz_loss + re_label_loss + re_sp_loss + normal_loss
-            loss = re_xyz_loss + normal_loss
-            # loss = re_xyz_loss
+            # 重建法线损失以及法线一致性损失
+            re_normal_loss = args['w_re_normal_loss'] * (1 - (1 - w_normal_dis) * torch.sum(normals * rec_normal, dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            normal_consistency_loss = args['w_normal_consistency_loss'] * (1 - (1 - w_normal_dis) * torch.sum(sp_center_normal * rec_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
+            # 重建参数损失
+            re_param_loss = args['w_re_param_loss'] * torch.mean(torch.norm(rec_param - param, p=2, dim=1, keepdim=False))
 
+            # 对比损失
+            contrastive_loss = args['w_contrastive_loss'] * contrastive_loss
+
+            # 总loss
+            loss = re_xyz_loss + re_label_loss + re_sp_loss + type_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss
+
+        # calculate superpoint metrics
         for bid in range(offset.shape[0]):
             tedg_source = edg_source[bid]
             tedg_target = edg_target[bid]
@@ -855,13 +875,17 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             init_center = c_idx.cpu().numpy()
             filename_ = filename[bid]
             if bid == 0:
-                txyz = coord[:offset[0]].cpu().numpy()
+                txyz = coord[:offset[0]]
+                tnormal = normals[:offset[0]]
+                ttype_per_point = type_per_point[:offset[0]]
                 spout_ = spout[:offset[0]].detach().cpu().numpy()
                 pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
                 p_fea_ = p_fea[:offset[0]]
                 primitive_embedding_ = primitive_embedding[:offset[0]]
             else:
-                txyz = coord[offset[bid-1]:offset[bid]].cpu().numpy()
+                txyz = coord[offset[bid-1]:offset[bid]]
+                tnormal = normals[offset[bid-1]:offset[bid]]
+                ttype_per_point = type_per_point[offset[bid-1]:offset[bid]]
                 spout_ = spout[offset[bid-1]:offset[bid]].detach().cpu().numpy()
                 pt_center_index = c2p_idx_base[offset[bid-1]:offset[bid]].cpu().numpy()
                 p_fea_ = p_fea[offset[bid-1]:offset[bid]]
@@ -871,22 +895,62 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             if args.visual:
                 # 超点分割结果
                 root_name = args.visual_root + '/{}.ply'.format(filename_)
-                partition2ply(root_name, txyz, pred_components)
+                partition2ply(root_name, txyz.cpu().numpy(), pred_components)
+
+                # # 语义分割结果
+                # root_name = args.visual_root + '/{}_sem.ply'.format(filename_)
+                # seman_pred = torch.softmax(ttype_per_point, dim=1)
+                # seman_pred = torch.argmax(seman_pred, dim=1).cpu().numpy()
+                # from src.VisUtils import write_ply
+                # write_ply(root_name, txyz.cpu().numpy(), seman_pred)
+
                 # 超点均值聚类,基元分割结果
                 pred_sp = torch.from_numpy(pred_in_component).to(primitive_embedding_.device)
                 p2sp_matrix = label2one_hot(pred_sp, pred_sp.max()+1).squeeze()
                 sp_cnt = torch.sum(p2sp_matrix, dim=1)
                 sp_fea = torch.matmul(p2sp_matrix, primitive_embedding_) / sp_cnt.unsqueeze(1)
+                # ----------------使用融合特征进行聚类，几何距离特征----------------
+                sp_xyz = torch.matmul(p2sp_matrix, txyz) / sp_cnt.unsqueeze(1)
+                t_sp_xyz = find_closest_xyz(sp_xyz, txyz, pred_components)
+                affinity_matrix = construction_affinity_matrix_type_sp(txyz, tnormal, ttype_per_point, pred_components, t_sp_xyz)
+                spec_embedding_list = []
+                weight_ent = []
+
+                # use network feature
+                feat_ent = 1.70 - float(npy(compute_entropy_sp(sp_fea)))
+                weight_ent.append(feat_ent)
+                spec_embedding_list.append(sp_fea)
+                
+                # use geometry distance feature
+                topk = 10          
+                e, v = torch.lobpcg(affinity_matrix, k=topk, niter=10)
+                v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-16)
+
+                dis_ent = 1.50 - float(npy(compute_entropy_sp(v)))
+                
+                weight_ent.append(dis_ent)
+                spec_embedding_list.append(v)
+
+                # combine features
+                weighted_list = []
+                norm_weight_ent = weight_ent / np.linalg.norm(weight_ent)
+                for m in range(len(spec_embedding_list)):
+                    weighted_list.append(spec_embedding_list[m] * weight_ent[m])
+
+                spectral_embedding = torch.cat(weighted_list, dim=-1)
+                # affinity_matrix = construction_affinity_matrix_type(txyz, type_per_point, param_per_point)
+                # ----------------------------------------------------
+
                 cluster_pred = sp_mean_shift_gpu(sp_fea, bandwidth = args.bandwidth)
-                for i in range(cluster_pred.shape[0]):
-                    pred_in_component[pred_in_component == i] = cluster_pred[i]
+                for j in range(cluster_pred.shape[0]):
+                    pred_in_component[pred_in_component == j] = cluster_pred[j]
                 coms=np.unique(pred_in_component)
                 components = []
-                for i in range(len(coms)):
-                    te=np.where(pred_in_component==coms[i])
+                for k in range(len(coms)):
+                    te=np.where(pred_in_component==coms[k])
                     components.append(te)
                 prim_root_name = args.visual_root + '/{}_prim.ply'.format(filename_)
-                partition2ply(prim_root_name, txyz, components)
+                partition2ply(prim_root_name, txyz.cpu().numpy(), components)
 
             # 计算指标
             pred_transition = pred_in_component[tedg_source] != pred_in_component[tedg_target]
@@ -919,44 +983,61 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
         # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
         # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
-        loss_re_xyz_meter.update(re_xyz_loss.item(), n)
-        loss_re_label_meter.update(re_label_loss.item(), n)
-        loss_re_sp_meter.update(re_sp_loss.item(), n)
-        loss_norm_meter.update(normal_loss.item(), n)
-        loss_meter.update(loss.item(), n)
             
         # spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
         # s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
-        # # All Reduce loss
-        # if args.multiprocessing_distributed:
-        #     dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
-        #     dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
-        #     dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
-        #     # dist.all_reduce(s_iou.div_(torch.cuda.device_count()))
-        #     # dist.all_reduce(p_iou.div_(torch.cuda.device_count()))
+        # All Reduce loss
+        if args.multiprocessing_distributed:
+            dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_xyz_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_label_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_sp_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_normal_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(normal_consistency_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(re_param_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(contrastive_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(loss.div_(torch.cuda.device_count()))
         # feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
         # feat_loss_meter.update(feat_loss_.item())
         # type_loss_meter.update(type_loss_.item())
         # boundary_loss_meter.update(boundary_loss_.item())
         # s_iou_meter.update(s_iou)
         # type_iou_meter.update(p_iou)
+        loss_type_meter.update(type_loss.item(), n)
+        loss_re_xyz_meter.update(re_xyz_loss.item(), n)
+        loss_re_label_meter.update(re_label_loss.item(), n)
+        loss_re_sp_meter.update(re_sp_loss.item(), n)
+        loss_re_norm_meter.update(re_normal_loss.item(), n)
+        loss_norm_consis_meter.update(normal_consistency_loss.item(), n)
+        loss_re_param_meter.update(re_param_loss.item(), n)
+        loss_p2sp_contrast_meter.update(contrastive_loss.item(), n)
+        loss_meter.update(loss.item(), n)
+
         batch_time.update(time.time() - end)
         end = time.time()
         if (i + 1) % args.print_freq == 0 and main_process():
             logger.info('Test: [{}/{}] '
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
+                        'LS_type {loss_type_meter.val:.4f} '
                         'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
                         'LS_re_label {loss_re_label_meter.val:.4f} '
                         'LS_re_sp {loss_re_sp_meter.val:.4f} '
-                        'LS_norm {loss_norm_meter.val:.4f} '
+                        'LS_re_norm {loss_re_norm_meter.val:.4f} '
+                        'LS_norm_consis {loss_norm_consis_meter.val:.4f} '
+                        'LS_re_param {loss_re_param_meter.val:.4f} '
+                        'LS_p2sp_contrast {loss_p2sp_contrast_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
+                                                          loss_type_meter=loss_type_meter,
                                                           loss_re_xyz_meter=loss_re_xyz_meter,
                                                           loss_re_label_meter=loss_re_label_meter,
                                                           loss_re_sp_meter=loss_re_sp_meter,
-                                                          loss_norm_meter=loss_norm_meter,
+                                                          loss_re_norm_meter=loss_re_norm_meter,
+                                                          loss_norm_consis_meter=loss_norm_consis_meter,
+                                                          loss_re_param_meter=loss_re_param_meter,
+                                                          loss_p2sp_contrast_meter=loss_p2sp_contrast_meter,
                                                           loss_meter=loss_meter))
 
     br = BR_meter.value()[0]
