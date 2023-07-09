@@ -62,7 +62,7 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [2]
+  train_gpu: [7]
   workers: 4  # data loader workers
   batch_size: 6  # batch size for training
   batch_size_val: 6  # batch size for validation during training, memory and speed tradeoff

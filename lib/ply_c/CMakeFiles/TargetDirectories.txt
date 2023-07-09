@@ -1,0 +1,3 @@
+/data/fz20/project/SPNet/lib/ply_c/CMakeFiles/rebuild_cache.dir
+/data/fz20/project/SPNet/lib/ply_c/CMakeFiles/edit_cache.dir
+/data/fz20/project/SPNet/lib/ply_c/CMakeFiles/ply_c.dir

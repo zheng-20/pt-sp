@@ -964,7 +964,7 @@ class SuperPointNet(nn.Module):
         target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
         return target.type(torch.float32)
 
-    def forward(self, pxo, onehot_label=None, label=None, instance_label=None, param=None):
+    def forward(self, pxo, onehot_label=None, label=None, instance_label=None, param=None, normal_s3dis=None):
         p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
         x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
         p1, x1, o1 = self.enc1([p0, x0, o0])
@@ -1129,7 +1129,10 @@ class SuperPointNet(nn.Module):
             # re_p_label: b x classes x n
 
             # ------------------------------ reconstruct normal ----------------------------
-            normal = pxo[1]
+            if normal_s3dis is not None:
+                normal = normal_s3dis   # s3dis数据集中的法向量
+            else:
+                normal = pxo[1]
             # sp_normal = calc_sp_fea(final_asso, normal.unsqueeze(0), 6, c2p_idx, cluster_idx, o0)
             sp_normal = calc_sp_fea_v2(final_asso, normal, 6, c2p_idx, cluster_idx, o0, n_o)
 
@@ -1171,10 +1174,13 @@ class SuperPointNet(nn.Module):
             re_p_xyz = None
             re_p_label = None
 
-        type_per_point = self.cls(x1) # n × classes
-        embedding = self.embedding64(x1) # n × 128
-        # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
-        return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+        if normal_s3dis is None:
+            type_per_point = self.cls(x1) # n × classes
+            embedding = self.embedding64(x1) # n × 128
+            # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+            return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+        else:
+            return final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵, 用于计算评价指标与可视化
         cluster_idx: b*m 超点中心索引(基于n), 用于计算评价指标与可视化
