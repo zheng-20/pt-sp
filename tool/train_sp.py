@@ -137,6 +137,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.pointtransformer.pointtransformer_seg import boundarypointtransformer_Unit_seg_repro as Model
     elif args.arch == 'superpoint_net':
         from model.superpoint.superpoint_net import superpoint_seg_repro as Model
+    elif args.arch == 'superpoint_fcn_net':
+        from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
@@ -517,7 +519,8 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             contrastive_loss = args['w_contrastive_loss'] * contrastive_loss
 
             # 总loss
-            loss = feat_loss + re_xyz_loss + re_label_loss + re_sp_loss + type_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss
+            # loss = feat_loss + re_xyz_loss + re_label_loss + re_sp_loss + type_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss
+            loss = re_xyz_loss + re_label_loss + re_sp_loss
 
         # calculate superpoint metrics
         for bid in range(offset.shape[0]):

@@ -4,8 +4,8 @@
 CONFIG:
   #------GPU setting -------------------------------
   for_debug: False
-  train_gpu: [3]
-  test_gpu: [1]
+  train_gpu: [6]
+  test_gpu: [6]
 
   # ------------random seed -------------------------
   manual_seed: 123
@@ -18,7 +18,7 @@ CONFIG:
   names_path: "/data1/fz20/project/point-transformer-boundary/data/s3dis/s3dis_names.txt"
   save_path: runs/s3dis
 
-  num_point: 8999        # actually 14999+1=15000
+  num_point: 14999        # actually 14999+1=15000
   # very important!!!!
   # rate: 0.008             # 0.008 for training and 0.0069 for testing
   rate: 0.0069
@@ -47,12 +47,12 @@ CONFIG:
   BR_tolerance: 1
 
   # -------------network setting---------------------
-  arch: 'superpoint_net' # network architecture
+  arch: 'superpoint_fcn_net' # network architecture
 
   dropout: 0.3
 
-  batch_size: 20
-  batch_size_val: 32
+  batch_size: 2
+  batch_size_val: 1
   ignore_label: -100
 
   epochs: 2000
@@ -73,14 +73,14 @@ CONFIG:
   re_sp_loss: 'cel'
   use_semantic_loss: 0    # 0: not use 1: seg 2: seal
 
-  w_re_xyz_loss: 0.0001
+  w_re_xyz_loss: 0.001
   w_re_label_loss: 1.0
   w_re_sp_loss: 1.0
   # w_semantic_loss: 0.0
   w_re_param_loss: 0.0
-  w_re_normal_loss: 0.1
+  w_re_normal_loss: 0.001
   w_normal_consistency_loss: 0.0
-  w_contrastive_loss: 1.0
+  w_contrastive_loss: 0.5
   w_type_loss: 0.0
 
   scheduler_update: epoch
@@ -97,7 +97,7 @@ CONFIG:
   evaluate: True           # evaluate
   weight:  # path to initial weight (default: none)
   resume:  # path to latest checkpoint (default: none)
-  visual_root: /data1/fz20/project/point-transformer-boundary/exp/s3dis/v1.5_only_semloss/visual
+  visual_root: 
   visual: False
 
   # ------------------Distributed----------------------------

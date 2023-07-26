@@ -28,7 +28,7 @@ from util.metrics import *
 from util import config
 from util.abc import ABC_Dataset
 from util.s3dis import S3DIS
-from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset
+from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset, MultiEpochsDataLoader
 from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port
 from util.data_util import collate_fn, collate_fn_limit
 from util import transform as t
@@ -134,6 +134,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.pointtransformer.pointtransformer_seg import boundarypointtransformer_Unit_seg_repro as Model
     elif args.arch == 'superpoint_net':
         from model.superpoint.superpoint_net import superpoint_seg_repro as Model
+    elif args.arch == 'superpoint_fcn_net':
+        from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
@@ -272,7 +274,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
     else:
         train_sampler = None
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=collate_fn)
+    # train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=collate_fn)
+    train_loader = MultiEpochsDataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=collate_fn)
 
     # val_loader = None
     if args.evaluate:
@@ -302,7 +305,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             warmup_iters=args.warmup_iters, warmup_ratio=args.warmup_ratio)
     elif args.scheduler == 'MultiStep':
         assert args.scheduler_update == 'epoch'
-        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [int(args.epochs*0.4), int(args.epochs*0.8)]
+        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [300, 600, 900, 1200, 1600]
         gamma = args.gamma if hasattr(args, 'gamma') else 0.1
         if main_process():
             logger.info("scheduler: MultiStep. scheduler_update: {}. milestones: {}, gamma: {}".format(args.scheduler_update, milestones, gamma))
