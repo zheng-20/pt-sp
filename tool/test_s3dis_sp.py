@@ -177,7 +177,7 @@ def main():
     #                                            drop_last=False)
     test_loader = MultiEpochsDataLoader(test_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, drop_last=False, collate_fn=collate_fn)
 
-    test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, epoch)
+    test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, args.epochs)
 
 def label2one_hot(labels, C=10):
     n = labels.size(0)
@@ -266,6 +266,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
 
     model.eval()
     end = time.time()
+    test_start = time.time()
     max_iter = 1 * len(test_loader)
     cnt_room, cnt_sp, cnt_sp_act = 0, 0, 0  # cnt_room: number of rooms, cnt_sp: number of superpoints, cnt_sp_act: number of active superpoints
     cnt_sp_std = 0.
@@ -289,7 +290,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
         
         logger.info('xyz: {}'.format(coord.numpy().shape))    # 1 x n x 3
         # th = 500000
-        th = 200000      # 1GB显存4500个点
+        th = 450000      # 1GB显存4500个点
         if coord.size(0) >= th:
             inps, rgbs, normalss, objects, semantics_gt, params, offsets, indexs = split_data(coord.numpy(), rgb.numpy(), normals.numpy(), label.numpy(), semantic_gt.numpy(), param.numpy(), offset, th)
             n = 0
@@ -313,64 +314,51 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
                 s_offset = torch.tensor([offsets[j]]).cuda(non_blocking=True).int()
                 s_onehot_label = label2one_hot(s_semantics_gt, args['classes']) 
 
-                logger.info('s_coord: {} {}'.format(s_coord.size(), s_coord.type()))
-                # logger.info('s_gt: {} {}'.format(s_gt.size(), s_gt.type()))
-                # logger.info('s_clouds: {} {}'.format(s_clouds.size(), s_clouds.type()))
-                # logger.info('s_onehot_label: {} {}'.format(s_onehot_label.size(), s_onehot_label.type()))
+                # logger.info('s_coord: {} {}'.format(s_coord.size(), s_coord.type()))
+              
                 with torch.no_grad():
-                    spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+                    type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
                         w_normal_dis, rec_param, contrastive_loss = model([s_coord, s_rgb, s_offset], s_onehot_label, s_semantics_gt, s_objects, s_params, s_normals) # superpoint
                 
                 c_idx = c_idx.cpu().numpy()                 # 1 x m'         val: 0,1,2,...,n'-1
                 c_idx += mov_n
                 
                 all_c_idx = np.concatenate((all_c_idx, c_idx), axis=0) if all_c_idx.size else c_idx
-                logger.info('c_idx: {}'.format(c_idx.shape, np.max(c_idx)))
-                logger.info('mov_n: {}'.format(mov_n))
-            
-                # c2p_idx = c2p_idx.cpu().numpy()             # 1 x n' x nc2p  val: 0,1,2,...,n'-1
-                # c2p_idx += mov_n
-                # all_c2p_idx[0, indexs[j], :] = c2p_idx
-                # logger.info('c2p_idx: {} {}'.format(c2p_idx.shape, np.max(c2p_idx)))
+                # logger.info('c_idx: {}'.format(c_idx.shape, np.max(c_idx)))
                 # logger.info('mov_n: {}'.format(mov_n))
             
                 c2p_idx_base = c2p_idx_base.cpu().numpy()   # 1 x n' x nc2p  val: 0,1,2,...,m'-1
                 c2p_idx_base += mov_m
                 all_c2p_idx_base[indexs[j], :] = c2p_idx_base
-                logger.info('c2p_idx_base: {}'.format(c2p_idx_base.shape))
-                logger.info('mov_m: {}'.format(mov_m))
-
-                # output = output.detach().cpu().numpy()      # 1 x nclass x n
-                # logger.info('output: {}'.format(output.shape))
-                # all_output[0, indexs[j], :] = output.transpose((0, 2, 1))
+                # logger.info('c2p_idx_base: {}'.format(c2p_idx_base.shape))
+                # logger.info('mov_m: {}'.format(mov_m))
             
                 rec_xyz = rec_xyz.detach().cpu().numpy()    # 1 x 3 x n
-                logger.info('rec_xyz: {}'.format(rec_xyz.shape))
+                # logger.info('rec_xyz: {}'.format(rec_xyz.shape))
                 all_rec_xyz[indexs[j], :] = rec_xyz.transpose((1, 0))
             
                 rec_label = rec_label.detach().cpu().numpy()    # 1 x nclass x n
-                logger.info('rec_label: {}'.format(rec_label.shape))
+                # logger.info('rec_label: {}'.format(rec_label.shape))
                 all_rec_label[indexs[j], :] = rec_label.transpose((1, 0))
 
 
                 fea_dist = spout.detach().cpu().numpy()  # 1 x n' x nc2p
                 all_fea_dist[indexs[j], :] = fea_dist
-                logger.info('fea_dist: {}'.format(fea_dist.shape))
+                # logger.info('fea_dist: {}'.format(fea_dist.shape))
             
             
                 mov_n += inps[j].shape[0]   # number of points move
                 mov_m += c_idx.shape[0]   # number of clusters move
-            logger.info('n: {}'.format(n))
-            logger.info('all_c_idx: {}'.format(all_c_idx.shape))                    # 1 x m
-            # logger.info('all_c2p_idx: {}'.format(all_c2p_idx.shape))                # 1 x n x nc2p
-            logger.info('all_c2p_idx_base: {}'.format(all_c2p_idx_base.shape))      # 1 x n x nc2p
-            # all_output = all_output.transpose((0, 2, 1))            # 1 x n x nclass -> 1 x nclass x n
-            # logger.info('all_output: {}'.format(all_output.shape))
+            # logger.info('n: {}'.format(n))
+            # logger.info('all_c_idx: {}'.format(all_c_idx.shape))                    # 1 x m
+
+            # logger.info('all_c2p_idx_base: {}'.format(all_c2p_idx_base.shape))      # 1 x n x nc2p
+            
             all_rec_xyz = all_rec_xyz.transpose((1, 0))          # 1 x n x 3 -> 1 x 3 x n
-            logger.info('all_rec_xyz: {}'.format(all_rec_xyz.shape))                # 1 x 3 x n
+            # logger.info('all_rec_xyz: {}'.format(all_rec_xyz.shape))                # 1 x 3 x n
             all_rec_label = all_rec_label.transpose((1, 0))      # 1 x n x nclass -> 1 x nclass x n
-            logger.info('all_rec_label: {}'.format(all_rec_label.shape))            # 1 x nclass x n
-            logger.info('all_fea_dist: {}'.format(all_fea_dist.shape))              # 1 x n x nc2p
+            # logger.info('all_rec_label: {}'.format(all_rec_label.shape))            # 1 x nclass x n
+            # logger.info('all_fea_dist: {}'.format(all_fea_dist.shape))              # 1 x n x nc2p
             
             semantic_gt = semantic_gt.cuda(non_blocking=True)
             onehot_label = label2one_hot(semantic_gt, args['classes'])
@@ -386,7 +374,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
             onehot_label = label2one_hot(semantic_gt, args['classes'])
             
             with torch.no_grad():
-                spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+                type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
                  w_normal_dis, rec_param, contrastive_loss = model([coord, rgb, offset], onehot_label, semantic_gt, label, param, normals) # superpoint
             # ---------------- superpoint realted ------------------
             # spout:        b x n x nc2p
@@ -412,6 +400,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
         spout = all_fea_dist
         if semantic_gt.shape[-1] == 1:
             semantic_gt = semantic_gt[:, 0]  # for cls
+        # type_loss = args['w_type_loss'] * criterion(type_per_point, semantic_gt)
         re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(torch.from_numpy(all_rec_xyz), coord.transpose(0,1).contiguous())
         if args['re_label_loss'] == 'cel':
             re_label_loss = args['w_re_label_loss'] * criterion_re_label(torch.from_numpy(all_rec_label).transpose(0,1).contiguous(), semantic_gt.cpu())
@@ -502,7 +491,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
         end = time.time()
 
         # calculate remain time
-        current_iter = epoch * len(test_loader) + i + 1
+        current_iter = i + 1
         remain_iter = max_iter - current_iter
         remain_time = remain_iter * batch_time.avg
         t_m, t_s = divmod(remain_time, 60)
@@ -526,17 +515,17 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
         #                                                       loss_meter=loss_meter))
         # else:
         logger.info('Epoch: [{}/{}][{}/{}] '
-                        'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
-                        'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
-                        'Remain {remain_time} '
-                        'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
-                        'LS_re_label {loss_re_label_meter.val:.4f} '
-                        'Loss {loss_meter.val:.4f}'.format(epoch+1, args["epochs"], i + 1, len(test_loader),
-                                                            batch_time=batch_time, data_time=data_time,
-                                                            remain_time=remain_time,
-                                                            loss_re_xyz_meter=loss_re_xyz_meter,
-                                                            loss_re_label_meter=loss_re_label_meter,
-                                                            loss_meter=loss_meter))
+                    'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
+                    'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
+                    'Remain {remain_time} '
+                    'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
+                    'LS_re_label {loss_re_label_meter.val:.4f} '
+                    'Loss {loss_meter.val:.4f}'.format(epoch+1, args["epochs"], i + 1, len(test_loader),
+                                                        batch_time=batch_time, data_time=data_time,
+                                                        remain_time=remain_time,
+                                                        loss_re_xyz_meter=loss_re_xyz_meter,
+                                                        loss_re_label_meter=loss_re_label_meter,
+                                                        loss_meter=loss_meter))
 
     asa = confusion_matrix.get_overall_accuracy()
     br = BR_meter.value()[0]
@@ -545,6 +534,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
     logger.info('Test result: ASA/BR/BP/F1 {:.4f}/{:.4f}/{:.4f}/{:.4f}'.format(asa, br, bp, f1_score))
     logger.info('cnt_room: {} cnt_sp: {} avg_sp: {}'.format(cnt_room, cnt_sp, 1.*cnt_sp/cnt_room))
     logger.info('cnt_sp_act: {} avg_sp_act: {}'.format(cnt_sp_act, 1.*cnt_sp_act/cnt_room))
+    logger.info('Test total time: {:.2f}s'.format(time.time() - test_start))
 
 if __name__ == '__main__':
     main()

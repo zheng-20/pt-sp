@@ -303,6 +303,137 @@ class superpoint_transformer(nn.Module):
         return asso_matrix
 
 
+class CrossAttentionLayer_p2sp(nn.Module):
+
+    def __init__(self, in_planes, out_planes):
+        super().__init__()
+
+        # self.share_planes = 2
+        self.linear_q = nn.Linear(in_planes, out_planes)
+        self.linear_k = nn.Linear(in_planes, out_planes)
+        self.linear_v = nn.Linear(in_planes, out_planes)
+        self.linear_p = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3), nn.ReLU(inplace=True), nn.Linear(3, out_planes))
+        self.linear_w = nn.Sequential(nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes, out_planes),
+                                    nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes, out_planes))
+        self.softmax = nn.Softmax(dim=1)
+        self.norm = nn.LayerNorm(out_planes)
+
+    def forward(self, c2p_idx_abs, o_p_fea, sp_fea, p_e):
+        n, nc2p = c2p_idx_abs.size()    # n: 点云中点的个数, nc2p: 每个点最近的超点个数
+        q_p_fea = self.linear_q(o_p_fea)   # n x c
+        k_sp_fea = self.linear_k(sp_fea)   # m x c
+        v_sp_fea = self.linear_v(sp_fea)   # m x c_out
+        k_sp_fea = pointops_sp_v2.grouping(k_sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        v_sp_fea = pointops_sp_v2.grouping(v_sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        # p_e = pointops_sp_v2.grouping(sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x 3
+        for i, layer in enumerate(self.linear_p): p_e = layer(p_e.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_e)    # (n, nc2p, c)
+        w = k_sp_fea - q_p_fea.unsqueeze(1).repeat(1, nc2p, 1) + p_e    # (n, nc2p, c)
+        for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
+        w = self.softmax(w)  # (n, nc2p, c)
+        # c = v_sp_fea.shape[2]; s = self.share_planes
+        bi_w = (v_sp_fea + p_e) * w  # (n, nc2p, c)
+        output = bi_w + q_p_fea.unsqueeze(1) # skip connection
+        output = self.norm(output)
+
+        return output
+
+
+class SelfAttentionLayer(nn.Module):
+
+    def __init__(self, in_planes, out_planes):
+        super().__init__()
+        self.linear_q = nn.Linear(in_planes, out_planes)
+        self.linear_k = nn.Linear(in_planes, out_planes)
+        self.linear_v = nn.Linear(in_planes, out_planes)
+        self.linear_p = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3), nn.ReLU(inplace=True), nn.Linear(3, out_planes))
+        self.linear_w = nn.Sequential(nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes, out_planes),
+                                    nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes, out_planes))
+        self.softmax = nn.Softmax(dim=1)
+        self.norm = nn.LayerNorm(out_planes)
+
+    def forward(self, x, p_e):
+        q = self.linear_q(x)
+        k = self.linear_k(x)
+        v = self.linear_v(x)
+        for i, layer in enumerate(self.linear_p): p_e = layer(p_e.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_e)    # (n, nc2p, c)
+        w = k - q + p_e
+        for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
+        w = self.softmax(w)  # (n, nc2p, c)
+        bi_w = (v + p_e) * w
+        output = bi_w + x
+        output = self.norm(output)
+
+        return output
+
+class FFN(nn.Module):
+    
+    def __init__(self, out_planes, hidden_planes):
+        super().__init__()
+        self.ffn = nn.Sequential(
+            nn.Linear(out_planes, hidden_planes),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_planes, out_planes)
+        )
+        self.norm = nn.LayerNorm(out_planes)
+
+    def forward(self, x):
+        output = self.ffn(x)
+        output = output + x
+        output = self.norm(output)
+
+        return output
+
+
+class superpoint_transformer_v2(nn.Module):
+    """
+    利用transformer编码点与超点中心之间的特征关系, 构建返回association map
+    """
+    def __init__(self, ch_wc2p_fea: List[int], ch_wc2p_xyz: List[int], ch_mlp: List[int],
+                 bn=True, use_xyz=True, use_softmax=True, use_norm=True, last=False):
+        super(superpoint_transformer_v2, self).__init__()
+        self.bn = bn
+        self.use_xyz = use_xyz
+        self.use_softmax = use_softmax
+        self.use_norm = use_norm
+        self.last = last
+        self.share_planes = 2
+        in_planes = ch_wc2p_fea[0]
+        mid_planes = ch_wc2p_fea[0]
+        hidden_planes = 128
+        out_planes = ch_wc2p_fea[1]
+
+        self.cross_attn_layer = CrossAttentionLayer_p2sp(in_planes, mid_planes)
+        self.attn_layer = SelfAttentionLayer(mid_planes, mid_planes)
+        self.ffn_layer = FFN(mid_planes, hidden_planes)
+        self.out_asso = nn.Sequential(nn.Linear(mid_planes, mid_planes), nn.ReLU(), nn.Linear(mid_planes, out_planes))
+
+
+    def forward(self, sp_fea, sp_xyz, o_p_fea, p_xyz, c2p_idx_abs, c2p_idx, cluster_idx, offset, sp_offset):
+        # sp_fea: b x m x c
+        # sp_xyz: b x m x 3
+        # o_p_fea: n x c
+        # p_xyz: n x 3
+        # c2p_idx_abs: n x nc2p 
+        # offset: b
+        
+        n, nc2p = c2p_idx_abs.size()    # n: 点云中点的个数, nc2p: 每个点最近的超点个数
+        p_e = pointops_sp_v2.grouping(sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x 3
+        bi_w = self.cross_attn_layer(c2p_idx_abs, o_p_fea, sp_fea, p_e)
+        # bi_w = self.attn_layer(bi_w, p_e)
+        # bi_w = self.ffn_layer(bi_w)
+        # bi_w = self.out_asso(bi_w)
+
+        bi_w = bi_w.sum(2).view(n, nc2p)  # (n, nc2p)
+
+        asso_matrix = F.softmax(bi_w, dim=1)  # (n, nc2p)
+
+        return asso_matrix
+
+
 def init_fea(p_fea, asso_matrix, sp_nei_cnt, offset):
     # p_fea: b x n x 32
     # asso_matrix: b x m x n

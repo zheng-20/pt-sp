@@ -1,6 +1,5 @@
 # --------------CONFIG FILE-----------------------
 
-
 CONFIG:
   #------GPU setting -------------------------------
   for_debug: False
@@ -12,11 +11,11 @@ CONFIG:
   sync_bn: False
 
   # ------------dataset setting----------------------
-  data_name: 's3dis'
-  classes: 13             # 13 cateogries for S3DIS (13 labeled)
-  data_root: "/data1/fz20/dataset/sp_s3dis_dataset"
+  data_name: 'vkitti'
+  classes: 13             # 13 cateogries for vkitti (13 labeled)
+  data_root: "/data1/fz20/dataset/sp_vkitti_dataset/vkitti3d_dataset_v1.0/features_supervision"
   names_path: "/data1/fz20/project/point-transformer-boundary/data/s3dis/s3dis_names.txt"
-  save_path: runs/s3dis
+  save_path: runs/vkitti
 
   num_point: 14999        # actually 14999+1=15000
   # very important!!!!
@@ -26,6 +25,7 @@ CONFIG:
   IA_FPS: False         # 是否使用IA-FPS
 
   test_area: 5
+  cvfold: 1
   fea_dim: 6              # feature dimension
   use_xyz: True
 
@@ -53,7 +53,7 @@ CONFIG:
 
   dropout: 0.3
 
-  batch_size: 32
+  batch_size: 24
   batch_size_val: 1
   ignore_label: -100
 
@@ -81,8 +81,8 @@ CONFIG:
   # w_semantic_loss: 0.0
   w_re_param_loss: 0.0
   w_re_normal_loss: 0.0
-  w_normal_consistency_loss: 0.001
-  w_contrastive_loss: 0.5
+  w_normal_consistency_loss: 0.0
+  w_contrastive_loss: 0.0
   w_type_loss: 0.5  # 语义类型损失权重，用于IA-FPS
 
   scheduler_update: epoch

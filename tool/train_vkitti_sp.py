@@ -29,6 +29,7 @@ from util import config
 from util.abc import ABC_Dataset
 from util.s3dis import S3DIS
 from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset, MultiEpochsDataLoader
+from util.vkitti import collate_vkitti, vkitti_Dataset, MultiEpochsDataLoader
 from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port
 from util.data_util import collate_fn, collate_fn_limit
 from util import transform as t
@@ -42,8 +43,8 @@ from util.abc_util import construction_affinity_matrix_type_sp, find_closest_xyz
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Primitive Segmentation')
-    parser.add_argument('--config', type=str, default='config/s3dis/s3dis_sp.yaml', help='config file')
-    parser.add_argument('opts', help='see config/s3dis/s3dis_sp.yaml for all options', default=None, nargs=argparse.REMAINDER)
+    parser.add_argument('--config', type=str, default='config/vkitti/vkitti.yaml', help='config file')
+    parser.add_argument('opts', help='see config/vkitti/vkitti.yaml for all options', default=None, nargs=argparse.REMAINDER)
     args = parser.parse_args()
     assert args.config is not None
     cfg = config.load_cfg_from_cfg_file(args.config)
@@ -121,18 +122,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
-    # from model.pointtransformer.pointtransformer_seg import BoundaryNet as BoundaryModel
-    if args.arch == 'pointtransformer_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import pointtransformer_seg_repro as Model
-    elif args.arch == 'pointtransformer_primitive_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import PointTransformer_PrimSeg as Model
-    elif args.arch == 'boundarytransformer_primitive_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import BoundaryTransformer_PrimSeg as Model
-    elif args.arch == 'pointtransformer_Unit_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import pointtransformer_Unit_seg_repro as Model
-    elif args.arch == 'boundarypointtransformer_Unit_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import boundarypointtransformer_Unit_seg_repro as Model
-    elif args.arch == 'superpoint_net':
+    if args.arch == 'superpoint_net':
         from model.superpoint.superpoint_net import superpoint_seg_repro as Model
     elif args.arch == 'superpoint_fcn_net':
         from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
@@ -266,6 +256,9 @@ def main_worker(gpu, ngpus_per_node, argss):
         # train_data, test_data = create_s3dis_datasets(args, logger)
         train_data = s3dis_Dataset(args, split='train')
         collate_fn = collate_s3dis
+    elif args.data_name == 'vkitti':
+        train_data = vkitti_Dataset(args, split='train')
+        collate_fn = collate_vkitti
     else:
         raise ValueError("The dataset {} is not supported.".format(args.data_name))
 
@@ -287,6 +280,9 @@ def main_worker(gpu, ngpus_per_node, argss):
         elif args.data_name == 's3dis':
             # val_data = test_data
             val_data = s3dis_Dataset(args, split='test')
+        elif args.data_name == 'vkitti':
+            # val_data = test_data
+            val_data = vkitti_Dataset(args, split='test')
         else:
             raise ValueError("The dataset {} is not supported.".format(args.data_name))
         if args.distributed:
@@ -375,37 +371,6 @@ def main_worker(gpu, ngpus_per_node, argss):
             asa_is_best = asa > best_asa
             best_asa = max(asa, best_asa)
 
-        # is_best = False
-        # if args.evaluate and (epoch_log % args.eval_freq == 0):
-        #     if args.data_name == 'shapenet':
-        #         raise NotImplementedError()
-        #     else:
-        #         loss_val, br, bp, f1 = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
-        #     # s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion)
-
-        #     if main_process():
-        #         # writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
-        #         # writer.add_scalar('type_loss_val', type_loss_val, epoch_log)
-        #         # writer.add_scalar('boundary_loss_val', boundary_loss_val, epoch_log)
-        #         # writer.add_scalar('s_miou', s_miou, epoch_log)
-        #         # writer.add_scalar('p_miou', p_miou, epoch_log)
-        #         writer.add_scalar('loss_val', loss_val, epoch_log)
-        #         writer.add_scalar('f1_val', f1, epoch_log)
-        #         # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
-        #         # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
-        #         is_best = f1 > best_f1_score
-        #         best_f1_score = max(f1, best_f1_score)
-
-        # if (epoch_log % args.save_freq == 0) and main_process():
-        #     if not os.path.exists(args.save_path + "/model/"):
-        #         os.makedirs(args.save_path + "/model/")
-        #     filename = args.save_path + '/model/model_last.pth'
-        #     logger.info('Saving checkpoint to: ' + filename)
-        #     torch.save({'epoch': epoch_log, 'boundary_state_dict': boundarymodel.state_dict(), 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
-        #                 'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
-        #     if is_best:
-        #         logger.info('Best validation mIoU updated to: {:.4f}'.format(best_iou))
-        #         shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
         if (epoch_log % args.save_freq == 0) and main_process():
             if not os.path.exists(args.save_path + "/model/"):
                 os.makedirs(args.save_path + "/model/")
@@ -476,13 +441,14 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     if args.multiprocessing_distributed:
         print('$'*10)
 
-    for i, (filename, coord, rgb, normals, label, semantic, param, offset, edg_source, edg_target, is_transition) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
+    for i, (filename, coord, rgb, label, semantic, offset, edg_source, edg_target, is_transition) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
-        # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        # 对于kitti数据集，先将normal和param置为rgb
+        normals = rgb
+        param = rgb
+
         coord, rgb, normals, label, semantic, param, offset = coord.cuda(non_blocking=True), rgb.cuda(non_blocking=True), normals.cuda(non_blocking=True), \
                     label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        # coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-        #             label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
         semantic_gt = semantic[:, 1:].argmax(axis=1)
 
 
