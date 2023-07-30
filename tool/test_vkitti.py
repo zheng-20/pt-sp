@@ -44,12 +44,14 @@ from util.sp_util import get_components, perfect_prediction, relax_edge_binary, 
 # from util.SCANNET_dataset import create_scannet_datasets, my_collate_scannet
 # from util.SCANNET_dataset_v1 import create_scannet_datasets_v1, my_collate_scannet_v1
 from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset, MultiEpochsDataLoader
+from util.vkitti import collate_vkitti, vkitti_Dataset, MultiEpochsDataLoader
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Superpoint Generation')
     parser.add_argument('--config', type=str, default=None, required=True, help='config file')
     parser.add_argument('--model_path', type=str, default=None, required=True, help='save path')
     parser.add_argument('--save_folder', type=str, default=None, required=True, help='save_folder path')
+    parser.add_argument('opts', help='see config/vkitti/vkitti.yaml for all options', default=None, nargs=argparse.REMAINDER)
     # parser.add_argument('--epoch', type=int, default=None, required=True, help='corresponding to the train_epoch_xx.pth')
 
     args = parser.parse_args()
@@ -57,6 +59,8 @@ def get_parser():
     cfg = config.load_cfg_from_cfg_file(args.config)
     cfg["model_path"] = args.model_path
     cfg["save_folder"] = args.save_folder
+    if args.opts is not None:
+        cfg = config.merge_cfg_from_list(cfg, args.opts)
     # cfg["epoch"] = args.epoch
     
     print("#"*20)
@@ -139,7 +143,9 @@ def main():
     logger.info(model)
     model = torch.nn.DataParallel(model.cuda())
     
-    model_path = os.path.join(args["model_path"], "model", "model_best.pth")
+    # model_path = os.path.join(args["model_path"], "model", "model_best.pth")
+    model_path = os.path.join(args["model_path"], "model", "model_best_asa.pth")
+    # model_path = os.path.join(args["model_path"], "model", "model_last.pth")
     if os.path.isfile(model_path):
         logger.info("=> loading checkpoint '{}'".format(model_path))
         checkpoint = torch.load(model_path)
@@ -155,9 +161,9 @@ def main():
         train_data = s3dis_Dataset(args, split='train')
         test_data = s3dis_Dataset(args, split='test')
         collate_fn = collate_s3dis
-    # elif args['data_name'] == 'vkitti':
-    #     train_data, test_data = create_vkitti_datasets(args, logger)
-    #     my_collate_s = my_collate_vkitti
+    elif args['data_name'] == 'vkitti':
+        test_data = vkitti_Dataset(args, split='test')
+        collate_fn = collate_vkitti
     # elif args['data_name'] == 'scannet':
     #     train_data, test_data = create_scannet_datasets(args, logger)
     #     my_collate_s = my_collate_scannet
@@ -270,8 +276,11 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
     max_iter = 1 * len(test_loader)
     cnt_room, cnt_sp, cnt_sp_act = 0, 0, 0  # cnt_room: number of rooms, cnt_sp: number of superpoints, cnt_sp_act: number of active superpoints
     cnt_sp_std = 0.
-    for i, (filename, coord, rgb, normals, label, semantic, param, offset, edg_source, edg_target, is_transition) in enumerate(test_loader): 
+    for i, (filename, coord, rgb, label, semantic, offset, edg_source, edg_target, is_transition) in enumerate(test_loader): 
         logger.info('name: {}'.format(filename[0]))
+        # 对于kitti数据集，先将normal和param置为rgb
+        normals = rgb
+        param = rgb
         # fname: file name
         # edg_source: 1
         # edg_target: 1
@@ -536,7 +545,9 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
     logger.info('cnt_room: {} cnt_sp: {} avg_sp: {}'.format(cnt_room, cnt_sp, 1.*cnt_sp/cnt_room))
     logger.info('cnt_sp_act: {} avg_sp_act: {}'.format(cnt_sp_act, 1.*cnt_sp_act/cnt_room))
     logger.info('Test total time: {:.2f}s'.format(test_time))
-    file_result_txt = open(args.save_folder + '/results' + '.txt',"w")
+    # file_result_txt = open(args.save_folder + '/results' + '.txt',"w")
+    file_result_txt = open(args.save_folder + '/results-asa' + '.txt',"w")
+    # file_result_txt = open(args.save_folder + '/results-last' + '.txt',"w")
     file_result_txt.write("   cnt_room \t cnt_sp \t avg_sp \t cnt_sp_act \t avg_sp_act\n")
     file_result_txt.write("%d \t %d \t %d \t %d \t %d \n" % (cnt_room, cnt_sp, 1.*cnt_sp/cnt_room, cnt_sp_act, 1.*cnt_sp_act/cnt_room) )
     file_result_txt.write("   ASA \t BR \t BP \t F1 \t Test time\n")

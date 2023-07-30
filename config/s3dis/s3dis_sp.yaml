@@ -20,8 +20,8 @@ CONFIG:
 
   num_point: 14999        # actually 14999+1=15000
   # very important!!!!
-  # rate: 0.008             # 0.008 for training and 0.0069 for testing
-  rate: 0.0069
+  rate: 0.008             # 0.008 for training and 0.0069 for testing
+  # rate: 0.0069
   add_rate: 0.002       # 用于IA-FPS，增加的采样率
   IA_FPS: False         # 是否使用IA-FPS
 
