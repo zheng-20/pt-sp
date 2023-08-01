@@ -275,6 +275,8 @@ class vkitti_Dataset(Dataset):
 
         if split == 'train':
             self.data_list = trainlist
+        elif split == 'val':
+            self.data_list = testlist
         elif split == 'test':
             self.data_list = testlist
 
@@ -319,7 +321,7 @@ class vkitti_Dataset(Dataset):
         subsample = False
         new_ver_index = []
 
-        if self.split == 'train' and (0 < args['num_point'] < n_ver):
+        if (self.split == 'train' or self.split == 'val') and (0 < args['num_point'] < n_ver):
         # if (0 < args['num_point'] < n_ver):
             subsample = True
             selected_edg, selected_ver = libply_c.random_subgraph(n_ver, 

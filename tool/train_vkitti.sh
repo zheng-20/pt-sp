@@ -25,6 +25,8 @@ mkdir -p ${visual_dir}
 # mkdir -p ${result_dir}/last
 # mkdir -p ${result_dir}/best
 cp tool/train_vkitti.sh tool/${TRAIN_CODE} ${config} ${exp_dir}
+cp model/superpoint/superpoint_net.py tool/${TRAIN_CODE} ${config} ${exp_dir}
+cp model/superpoint/modules.py tool/${TRAIN_CODE} ${config} ${exp_dir}
 
 
 # now=$(date +"%Y%m%d_%H%M%S")

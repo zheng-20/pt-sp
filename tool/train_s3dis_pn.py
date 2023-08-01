@@ -28,8 +28,7 @@ from util.metrics import *
 from util import config
 from util.abc import ABC_Dataset
 from util.s3dis import S3DIS
-from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset, MultiEpochsDataLoader
-from util.vkitti import collate_vkitti, vkitti_Dataset, MultiEpochsDataLoader
+from util.S3DIS_dataset_pn import create_s3dis_datasets, collate_s3dis_pn, s3dis_Dataset_pn, MultiEpochsDataLoader
 from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port
 from util.data_util import collate_fn, collate_fn_limit
 from util import transform as t
@@ -43,8 +42,8 @@ from util.abc_util import construction_affinity_matrix_type_sp, find_closest_xyz
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Primitive Segmentation')
-    parser.add_argument('--config', type=str, default='config/vkitti/vkitti.yaml', help='config file')
-    parser.add_argument('opts', help='see config/vkitti/vkitti.yaml for all options', default=None, nargs=argparse.REMAINDER)
+    parser.add_argument('--config', type=str, default='config/s3dis/s3dis_sp.yaml', help='config file')
+    parser.add_argument('opts', help='see config/s3dis/s3dis_sp.yaml for all options', default=None, nargs=argparse.REMAINDER)
     args = parser.parse_args()
     assert args.config is not None
     cfg = config.load_cfg_from_cfg_file(args.config)
@@ -126,6 +125,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.superpoint.superpoint_net import superpoint_seg_repro as Model
     elif args.arch == 'superpoint_fcn_net':
         from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
+    elif args.arch == 'superpoint_pn_net':
+        from model.superpoint.superpoint_net import SuperPointNet_PointNet as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
@@ -254,11 +255,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         train_data = ABC_Dataset(split='train', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, shuffle_index=True, loop=args.train_loop)
     elif args.data_name == 's3dis':
         # train_data, test_data = create_s3dis_datasets(args, logger)
-        train_data = s3dis_Dataset(args, split='train')
-        collate_fn = collate_s3dis
-    elif args.data_name == 'vkitti':
-        train_data = vkitti_Dataset(args, split='train')
-        collate_fn = collate_vkitti
+        train_data = s3dis_Dataset_pn(args, split='train')
+        collate_fn = collate_s3dis_pn
     else:
         raise ValueError("The dataset {} is not supported.".format(args.data_name))
 
@@ -279,10 +277,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             val_data = ABC_Dataset(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000, loop=args.val_loop)
         elif args.data_name == 's3dis':
             # val_data = test_data
-            val_data = s3dis_Dataset(args, split='test')
-        elif args.data_name == 'vkitti':
-            # val_data = test_data
-            val_data = vkitti_Dataset(args, split='val')
+            val_data = s3dis_Dataset_pn(args, split='val')
         else:
             raise ValueError("The dataset {} is not supported.".format(args.data_name))
         if args.distributed:
@@ -371,6 +366,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             # asa_is_best = asa > best_asa
             # best_asa = max(asa, best_asa)
 
+        # is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
             if args.data_name == 'shapenet':
                 raise NotImplementedError()
@@ -391,6 +387,16 @@ def main_worker(gpu, ngpus_per_node, argss):
                 asa_is_best = asa > best_asa
                 best_asa = max(asa, best_asa)
 
+        # if (epoch_log % args.save_freq == 0) and main_process():
+        #     if not os.path.exists(args.save_path + "/model/"):
+        #         os.makedirs(args.save_path + "/model/")
+        #     filename = args.save_path + '/model/model_last.pth'
+        #     logger.info('Saving checkpoint to: ' + filename)
+        #     torch.save({'epoch': epoch_log, 'boundary_state_dict': boundarymodel.state_dict(), 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
+        #                 'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
+        #     if is_best:
+        #         logger.info('Best validation mIoU updated to: {:.4f}'.format(best_iou))
+        #         shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
         if (epoch_log % args.save_freq == 0) and main_process():
             if not os.path.exists(args.save_path + "/model/"):
                 os.makedirs(args.save_path + "/model/")
@@ -461,16 +467,16 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
     if args.multiprocessing_distributed:
         print('$'*10)
 
-    for i, (filename, coord, rgb, label, semantic, offset, edg_source, edg_target, is_transition) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
+    for i, (filename, coord, rgb, normals, label, semantic, param, offset, edg_source, edg_target, is_transition, clouds, clouds_global) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
-        # 对于kitti数据集，先将normal和param置为rgb
-        normals = rgb
-        param = rgb
-
-        coord, rgb, normals, label, semantic, param, offset = coord.cuda(non_blocking=True), rgb.cuda(non_blocking=True), normals.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        coord, rgb, normals, label, semantic, param, offset, clouds, clouds_global = coord.cuda(non_blocking=True), rgb.cuda(non_blocking=True), normals.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), clouds.cuda(non_blocking=True), clouds_global.cuda(non_blocking=True)
+        # coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+        #             label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
         semantic_gt = semantic[:, 1:].argmax(axis=1)
 
+        input = torch.cat((coord, clouds_global), dim=1)
 
         # if args.concat_xyz:
         #     feat = torch.cat([normals, coord], 1)
@@ -484,7 +490,7 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
             onehot_label = label2one_hot(semantic_gt, args['classes'])
             # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
             type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
-                 w_normal_dis, rec_param, contrastive_loss = model([coord, rgb, offset], onehot_label, semantic_gt, label, param, normals) # superpoint
+                 w_normal_dis, rec_param, contrastive_loss = model(offset, input, clouds, onehot_label, semantic_gt, label, param, normals) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic_gt.shape[-1] == 1:
                 semantic_gt = semantic_gt[:, 0]  # for cls
@@ -818,17 +824,16 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
     # boundarymodel.eval()
     model.eval()
     end = time.time()
-    for i, (filename, coord, rgb, label, semantic, offset, edg_source, edg_target, is_transition) in enumerate(val_loader):
+    for i, (filename, coord, rgb, normals, label, semantic, param, offset, edg_source, edg_target, is_transition, clouds, clouds_global) in enumerate(val_loader):
         data_time.update(time.time() - end)
-        # 对于kitti数据集，先将normal和param置为rgb
-        normals = rgb
-        param = rgb
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
         # coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
         #             label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
-        coord, rgb, normals, label, semantic, param, offset = coord.cuda(non_blocking=True), rgb.cuda(non_blocking=True), normals.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True)
+        coord, rgb, normals, label, semantic, param, offset, clouds, clouds_global = coord.cuda(non_blocking=True), rgb.cuda(non_blocking=True), normals.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), clouds.cuda(non_blocking=True), clouds_global.cuda(non_blocking=True)
         semantic_gt = semantic[:, 1:].argmax(axis=1)
+
+        input = torch.cat((coord, clouds_global), dim=1)
 
         if semantic_gt.shape[-1] == 1:
             semantic_gt = semantic_gt[:, 0]  # for cls
@@ -850,7 +855,7 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             # loss = feat_loss + type_loss + boundary_loss
             onehot_label = label2one_hot(semantic_gt, args['classes'])
             type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
-                 w_normal_dis, rec_param, contrastive_loss = model([coord, rgb, offset], onehot_label, semantic_gt, label, param, normals) # superpoint
+                 w_normal_dis, rec_param, contrastive_loss = model(offset, input, clouds, onehot_label, semantic_gt, label, param, normals) # superpoint
             # type_loss = criterion(type_per_point, semantic)
             re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
             if args['re_label_loss'] == 'cel':
@@ -1075,10 +1080,10 @@ if __name__ == '__main__':
     except Exception as e:
         # 添加异常处理，如果出现异常，发送微信通知
         print(str(e))
-        headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
-        resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
-            json={
-                "title": "A100: The training has stopped",
-                "name": "Your network training has made an error",
-                "content": str(e)
-            }, headers = headers)
+        # headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
+        # resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+        #     json={
+        #         "title": "A100: The training has stopped",
+        #         "name": "Your network training has made an error",
+        #         "content": str(e)
+        #     }, headers = headers)

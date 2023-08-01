@@ -17,7 +17,7 @@ from lib.pointops_sp_v2.functions import pointops_sp_v2
 from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, \
     point_normal_similarity_loss, calc_sp_normal, learn_SLIC_calc_v2, calc_sp_fea_v2, \
     Contrastive_InfoNCE_loss_sp, Contrastive_InfoNCE_loss_p2sp, Contrastive_InfoNCE_loss_re_p_fea, infoNCE_loss_p2sp, \
-    superpoint_transformer, superpoint_transformer_v2
+    superpoint_transformer, superpoint_transformer_v2, LPE_stn_recurrent
 
 
 class PointTransformerLayer(nn.Module):
@@ -1182,7 +1182,8 @@ class SuperPointNet(nn.Module):
             # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
             return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
         else:
-            return final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+            type_per_point = self.cls(x1) # n × classes
+            return type_per_point, final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
         '''
         final_asso: b*n*6 点与最近6个超点中心关联矩阵, 用于计算评价指标与可视化
         cluster_idx: b*m 超点中心索引(基于n), 用于计算评价指标与可视化
@@ -1266,6 +1267,15 @@ class SuperPointNet_FCN(nn.Module):
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
         self.superpoint_transformer = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        self.superpoint_transformer1 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        self.superpoint_transformer2 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        self.superpoint_transformer3 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
         # self.superpoint_transformer = superpoint_transformer_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
@@ -1466,7 +1476,10 @@ class SuperPointNet_FCN(nn.Module):
         # # sp_xyz_idx: m * 3
 
         # 超点transformer
-        fea_dist = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
 
         infoNCE_loss_4 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
         
@@ -1626,3 +1639,121 @@ class SuperPointNet_FCN(nn.Module):
 def superpoint_fcn_seg_repro(**kwargs):
     model = SuperPointNet_FCN(PointTransformerBlock, [2, 3, 4, 6, 3], **kwargs)
     return model
+
+
+
+# pointnet超点生成网络
+class SuperPointNet_PointNet(nn.Module):
+    def __init__(self, c=6, k=13, args=None):
+        super().__init__()
+        self.c = c
+        self.classes = k
+        self.rate = args.rate
+        self.nc2p = args.near_clusters2point
+        self.add_rate = args.add_rate
+        self.IA_FPS = args.IA_FPS
+
+        self.backbone = LPE_stn_recurrent(input_channels=2, args=args)
+
+        self.superpoint_transformer = superpoint_transformer(ch_wc2p_fea=[64, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[64, 16, 16],
+                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        self.mlp = nn.Sequential(nn.Linear(64, 64), nn.BatchNorm1d(64), nn.Linear(64, k))
+
+    def _break_up_pc(self, pc):
+        xyz = pc[..., 0:3].contiguous()
+        fea = pc[..., 3:].contiguous()
+        return xyz, fea
+
+    def label2one_hot_v2(self, labels, C=10):
+        n = labels.size(0)
+        labels = torch.unsqueeze(labels, dim=0).unsqueeze(0)
+        one_hot = torch.zeros(1, C, n, dtype=torch.long).cuda()         # create black
+        target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
+        return target.type(torch.float32)
+
+    def forward(self, o0, pointcloud: torch.cuda.FloatTensor, clouds_knn, onehot_label=None, label=None, instance_label=None, param=None, normal_s3dis=None):
+
+        xyz, clouds_global = self._break_up_pc(pointcloud)
+        # xyz: bn x 3
+        # clouds_global: bn x c 特征维度c==7
+
+        n_o, count = [int(o0[0].item() * self.rate)], int(o0[0].item() * self.rate)
+        for i in range(1, o0.shape[0]):
+            count += int((o0[i].item() - o0[i-1].item()) * self.rate)
+            n_o.append(count)
+        n_o = torch.cuda.IntTensor(n_o) # 以self.rate倍的比例进行采样
+
+        # calculate idx of superpoints and points
+        # cluster_idx = pointops_sp.furthestsampling_offset(p0, o0, num_clusters)
+        # cluster_idx: b × m
+        cluster_idx = pointops.furthestsampling(xyz, o0, n_o)    # m
+        # cluster_xyz = pointops_sp.gathering_offset(p0.transpose(0, 1).contiguous(), o0, cluster_idx).transpose(1, 2).contiguous()
+        # cluster_xyz: b × m × 3
+        cluster_xyz = pointops_sp_v2.gathering(xyz.transpose(0, 1).contiguous(), cluster_idx).transpose(0, 1).contiguous()
+
+        c2p_idx, c2p_idx_abs = pointops_sp_v2.knnquerycluster(self.nc2p, cluster_xyz, cluster_idx, xyz, o0, n_o)
+        # c2p_idx: n x 6 与每个点最近的nc2p个超点中心索引(基于n)
+        # c2p_idx_abs: n x 6 与每个点最近的nc2p个超点中心索引(基于m)
+
+        # association matrix
+        # asso_matrix, sp_nei_cnt, sp_lab = pointops_sp.assomatrixpluslabel_offset(6, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes, o0)
+        asso_matrix, sp_nei_cnt, sp_lab = pointops_sp_v2.assomatrixpluslabel(self.nc2p, o0, n_o, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes)
+        asso_matrix = asso_matrix.float()
+        sp_nei_cnt = sp_nei_cnt.float()
+        # asso_matrix: b x m x n 点与超点中心关联矩阵
+        # sp_nei_cnt: b x m x 1 每个超点所包含点数
+        # sp_lab: b x m x class 每个超点中点label数量
+
+        # ----------------------- embedding ----------------------------
+        
+        embedding = self.backbone(clouds_knn, clouds_global)
+        # embedding: bn x 64
+
+        type_per_point = self.mlp(embedding)
+
+        p_fea = embedding
+
+        sp_fea = torch.matmul(asso_matrix, p_fea) / sp_nei_cnt
+        
+
+        # 超点transformer
+        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, xyz, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+
+        infoNCE_loss_4 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+        
+        final_asso = fea_dist
+
+        p2sp_idx = torch.argmax(final_asso, dim=1, keepdim=False)
+        re_p_xyz = pointops_sp_v2.gathering_cluster(cluster_xyz.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx_abs)
+        sp_label = calc_sp_fea_v2(final_asso, onehot_label.squeeze(0).transpose(0, 1).contiguous(), self.nc2p, c2p_idx, cluster_idx, o0, n_o)
+        c2p_label = pointops_sp_v2.grouping(sp_label.transpose(0, 1).contiguous(), c2p_idx_abs)
+        re_p_label = torch.sum(c2p_label * final_asso.unsqueeze(0), dim=-1, keepdim=False)
+        sp_pseudo_lab = torch.argmax(sp_lab, dim=1, keepdim=False)  # b x m
+        sp_pseudo_lab_onehot = self.label2one_hot_v2(sp_pseudo_lab, self.classes)    # b x class x m
+
+        if normal_s3dis is not None:
+            normal = normal_s3dis   # s3dis数据集中的法向量
+        else:
+            normal = normal_s3dis
+        sp_normal = calc_sp_fea_v2(final_asso, normal, self.nc2p, c2p_idx, cluster_idx, o0, n_o)
+        c2p_normal = pointops_sp_v2.grouping(sp_normal.transpose(0, 1).contiguous(), c2p_idx_abs)
+        re_p_normal = torch.sum(c2p_normal * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
+        normal_distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - xyz, p=2, dim=1)  # 距离越远，权重越小
+        sp_center_normal = pointops_sp_v2.gathering_cluster(re_p_normal.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx).transpose(0, 1).contiguous()
+        contrastive_loss = infoNCE_loss_4  # 每次迭代都计算p2sp对比损失，新的对比损失，点与k个超点进行对比
+        # ------------------------------ reconstruct parameters ----------------------------
+        sp_param = calc_sp_fea_v2(final_asso, param, self.nc2p, c2p_idx, cluster_idx, o0, n_o)
+        c2p_param = pointops_sp_v2.grouping(sp_param.transpose(0, 1).contiguous(), c2p_idx_abs)
+        re_p_param = torch.sum(c2p_param * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
+
+        if normal_s3dis is None:
+            type_per_point = self.cls(embedding) # n × classes
+            embedding = self.embedding64(embedding) # n × 128
+            # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+            return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+        else:
+            return type_per_point, final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss

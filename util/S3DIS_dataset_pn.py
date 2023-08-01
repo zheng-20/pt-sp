@@ -242,8 +242,8 @@ def my_collate(batch):
 
     return short_name, edg_source, edg_target, is_transition, labels, objects, clouds, clouds_global, xyz
 
-def collate_s3dis(batch):
-    short_name, edg_source, edg_target, is_transition, labels, objects, xyz, rgb, normals, T_param = list(zip(*batch))
+def collate_s3dis_pn(batch):
+    short_name, edg_source, edg_target, is_transition, labels, objects, xyz, rgb, normals, T_param, clouds, clouds_global = list(zip(*batch))
 
     offset, count = [], 0
     # print("coord:", len(coord))
@@ -259,11 +259,13 @@ def collate_s3dis(batch):
     label = torch.cat(labels)
     param = torch.cat(T_param)
     offset = torch.IntTensor(offset)
+    clouds = torch.cat(clouds)
+    clouds_global = torch.cat(clouds_global)
 
-    return short_name, xyz, rgb, normals, objects, label, param, offset, edg_source, edg_target, is_transition
+    return short_name, xyz, rgb, normals, objects, label, param, offset, edg_source, edg_target, is_transition, clouds, clouds_global
 
 
-class s3dis_Dataset(Dataset):
+class s3dis_Dataset_pn(Dataset):
     def __init__(self, args, split='train'):
         super().__init__()
         self.split = split
@@ -359,42 +361,42 @@ class s3dis_Dataset(Dataset):
             is_transition = is_transition[selected_edg]
             labels = raw_labels[selected_ver,]
             objects = objects[selected_ver,]
-            # elevation = elevation[selected_ver]
-            # xyn = xyn[selected_ver,]
+            elevation = elevation[selected_ver]
+            xyn = xyn[selected_ver,]
             T_param = T_param[selected_ver,]
 
-        # if args['learned_embeddings']:
-        #     # we use point nets to embed the point clouds
-        #     # local_geometry: N x 20  index
-        #     nei = local_geometry[selected_ver, :args['k_nn_local']].astype('int64')
+        if args['learned_embeddings']:
+            # we use point nets to embed the point clouds
+            # local_geometry: N x 20  index
+            nei = local_geometry[selected_ver, :args['k_nn_local']].astype('int64')
             
-        #     clouds, clouds_global = [], []
-        #     #clouds_global is cloud global features. here, just the diameter + elevation
+            clouds, clouds_global = [], []
+            #clouds_global is cloud global features. here, just the diameter + elevation
 
-        #     clouds = xyz[nei,]
-        #     #diameters = np.max(np.max(clouds,axis=1) - np.min(clouds,axis=1), axis = 1)
-        #     diameters = np.sqrt(clouds.var(1).sum(1))
-        #     clouds = (clouds - xyz[selected_ver,np.newaxis,:]) / (diameters[:,np.newaxis,np.newaxis] + 1e-10)
+            clouds = xyz[nei,]
+            #diameters = np.max(np.max(clouds,axis=1) - np.min(clouds,axis=1), axis = 1)
+            diameters = np.sqrt(clouds.var(1).sum(1))
+            clouds = (clouds - xyz[selected_ver,np.newaxis,:]) / (diameters[:,np.newaxis,np.newaxis] + 1e-10)
 
-        #     if args['use_rgb']:
-        #         clouds = np.concatenate([clouds, rgb[nei,]],axis=2)
+            if args['use_rgb']:
+                clouds = np.concatenate([clouds, rgb[nei,]],axis=2)
 
-        #     if args['ver_value'] == 'geof':                             # N x 4
-        #         clouds = np.concatenate([clouds, geof[nei,]],axis=2)    # n x 20 x (xyz+rgb+geof) = n x 20 x 10
+            if args['ver_value'] == 'geof':                             # N x 4
+                clouds = np.concatenate([clouds, geof[nei,]],axis=2)    # n x 20 x (xyz+rgb+geof) = n x 20 x 10
 
-        #     clouds = clouds.transpose([0,2,1])
+            clouds = clouds.transpose([0,2,1])
 
-        #     clouds_global = diameters[:,None]
-        #     if 'e' in args['global_feat']:
-        #         clouds_global = np.hstack((clouds_global, elevation[:,None]))
-        #     if 'rgb' in args['global_feat']:
-        #         clouds_global = np.hstack((clouds_global, rgb[selected_ver,]))
-        #     if 'XY' in args['global_feat']:
-        #         clouds_global = np.hstack((clouds_global, xyn))
-        #     if 'xy' in args['global_feat']:
-        #         clouds_global = np.hstack((clouds_global, xyz[selected_ver,:2]))
-        #     if 'o' in args['global_feat']:
-        #         clouds_global = np.hstack((clouds_global, geof[selected_ver,]))
+            clouds_global = diameters[:,None]
+            if 'e' in args['global_feat']:
+                clouds_global = np.hstack((clouds_global, elevation[:,None]))
+            if 'rgb' in args['global_feat']:
+                clouds_global = np.hstack((clouds_global, rgb[selected_ver,]))
+            if 'XY' in args['global_feat']:
+                clouds_global = np.hstack((clouds_global, xyn))
+            if 'xy' in args['global_feat']:
+                clouds_global = np.hstack((clouds_global, xyz[selected_ver,:2]))
+            if 'o' in args['global_feat']:
+                clouds_global = np.hstack((clouds_global, geof[selected_ver,]))
 
         xyz = xyz[selected_ver,]
         rgb = rgb[selected_ver,]
@@ -404,8 +406,8 @@ class s3dis_Dataset(Dataset):
         labels = torch.from_numpy(labels)
         objects = torch.from_numpy(objects.astype('int64'))
         T_param = torch.from_numpy(T_param)
-        # clouds = torch.from_numpy(clouds)
-        # clouds_global = torch.from_numpy(clouds_global)
+        clouds = torch.from_numpy(clouds)
+        clouds_global = torch.from_numpy(clouds_global)
         # if clouds_global.shape[0] != 15000:
         #     print(short_name)
 
@@ -417,7 +419,7 @@ class s3dis_Dataset(Dataset):
         del raw_xyz
         # del nei
 
-        return short_name, edg_source, edg_target, is_transition, labels, objects, xyz, rgb, normals, T_param
+        return short_name, edg_source, edg_target, is_transition, labels, objects, xyz, rgb, normals, T_param, clouds, clouds_global
 
     def __len__(self):
         return round(len(self.data_idx))

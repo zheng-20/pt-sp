@@ -1,9 +1,10 @@
 # --------------CONFIG FILE-----------------------
 
+
 CONFIG:
   #------GPU setting -------------------------------
   for_debug: False
-  train_gpu: [0]
+  train_gpu: [6]
   test_gpu: [7]
 
   # ------------random seed -------------------------
@@ -11,27 +12,26 @@ CONFIG:
   sync_bn: False
 
   # ------------dataset setting----------------------
-  data_name: 'vkitti'
-  classes: 13             # 13 cateogries for vkitti (13 labeled)
-  data_root: "/data1/fz20/dataset/sp_vkitti_dataset/vkitti3d_dataset_v1.0/features_supervision"
+  data_name: 's3dis'
+  classes: 13             # 13 cateogries for S3DIS (13 labeled)
+  data_root: "/data1/fz20/dataset/sp_s3dis_dataset"
   names_path: "/data1/fz20/project/point-transformer-boundary/data/s3dis/s3dis_names.txt"
-  save_path: runs/vkitti
+  save_path: runs/s3dis
 
   num_point: 14999        # actually 14999+1=15000
   # very important!!!!
-  rate: 0.0048    #cv5:0.004 cv4:0.0013  cv3:0.0035  cv2:0.0035  cv1:0.0047        # 0.008 for training and 0.0069 for testing
+  rate: 0.008             # 0.008 for training and 0.0069 for testing
   # rate: 0.0069
   add_rate: 0.002       # 用于IA-FPS，增加的采样率
   IA_FPS: False         # 是否使用IA-FPS
 
   test_area: 5
-  cvfold: 1
   fea_dim: 6              # feature dimension
   use_xyz: True
 
-  # global_feat: 'eXYrgb'
-  # ver_value: 'ptn'
-  # learned_embeddings: True
+  global_feat: 'eXYrgb'
+  ver_value: 'ptn'
+  learned_embeddings: True
   pc_augm_rot: 1
   pc_augm_jitter: 1
 
@@ -49,16 +49,16 @@ CONFIG:
   BR_tolerance: 1
 
   # -------------network setting---------------------
-  arch: 'superpoint_fcn_net' # network architecture
+  arch: 'superpoint_pn_net' # network architecture
 
   dropout: 0.3
 
-  batch_size: 24
-  batch_size_val: 24
+  batch_size: 28
+  batch_size_val: 28
   batch_size_test: 1
   ignore_label: -100
 
-  epochs: 1000
+  epochs: 3000
   start_epoch: 0
 
   workers: 4
@@ -76,14 +76,14 @@ CONFIG:
   re_sp_loss: 'cel'
   use_semantic_loss: 0    # 0: not use 1: seg 2: seal
 
-  w_re_xyz_loss: 0.001
+  w_re_xyz_loss: 0.0001
   w_re_label_loss: 1.0
   w_re_sp_loss: 1.0
   # w_semantic_loss: 0.0
   w_re_param_loss: 0.0
   w_re_normal_loss: 0.0
   w_normal_consistency_loss: 0.0
-  w_contrastive_loss: 0.0
+  w_contrastive_loss: 0.1
   w_type_loss: 0.0  # 语义类型损失权重，用于IA-FPS
 
   scheduler_update: epoch

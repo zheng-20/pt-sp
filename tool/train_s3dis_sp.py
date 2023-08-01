@@ -286,14 +286,15 @@ def main_worker(gpu, ngpus_per_node, argss):
             val_data = ABC_Dataset(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000, loop=args.val_loop)
         elif args.data_name == 's3dis':
             # val_data = test_data
-            val_data = s3dis_Dataset(args, split='test')
+            val_data = s3dis_Dataset(args, split='val')
         else:
             raise ValueError("The dataset {} is not supported.".format(args.data_name))
         if args.distributed:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
         else:
             val_sampler = None
-        val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
+        # val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
+        val_loader = MultiEpochsDataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
 
     # set scheduler
     if args.scheduler == "MultiStepWithWarmup":
@@ -306,7 +307,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             warmup_iters=args.warmup_iters, warmup_ratio=args.warmup_ratio)
     elif args.scheduler == 'MultiStep':
         assert args.scheduler_update == 'epoch'
-        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [300, 600, 900, 1200, 1600]
+        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [int(args.epochs*0.4), int(args.epochs*0.8)]
         gamma = args.gamma if hasattr(args, 'gamma') else 0.1
         if main_process():
             logger.info("scheduler: MultiStep. scheduler_update: {}. milestones: {}, gamma: {}".format(args.scheduler_update, milestones, gamma))
@@ -367,34 +368,36 @@ def main_worker(gpu, ngpus_per_node, argss):
             writer.add_scalar('p2sp_contrast_loss_train', loss_p2sp_contrast, epoch_log)
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('f1_score', f1_score, epoch_log)
+            writer.add_scalar('asa', asa, epoch_log)
             # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
             # writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
             # writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
-            is_best = f1_score > best_f1_score
-            best_f1_score = max(f1_score, best_f1_score)
-            asa_is_best = asa > best_asa
-            best_asa = max(asa, best_asa)
+            # is_best = f1_score > best_f1_score
+            # best_f1_score = max(f1_score, best_f1_score)
+            # asa_is_best = asa > best_asa
+            # best_asa = max(asa, best_asa)
 
         # is_best = False
-        # if args.evaluate and (epoch_log % args.eval_freq == 0):
-        #     if args.data_name == 'shapenet':
-        #         raise NotImplementedError()
-        #     else:
-        #         loss_val, br, bp, f1 = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
-        #     # s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion)
+        if args.evaluate and (epoch_log % args.eval_freq == 0):
+            if args.data_name == 'shapenet':
+                raise NotImplementedError()
+            else:
+                loss_val, asa, br, bp, f1_score = validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp)
+            # s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion)
 
-        #     if main_process():
-        #         # writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
-        #         # writer.add_scalar('type_loss_val', type_loss_val, epoch_log)
-        #         # writer.add_scalar('boundary_loss_val', boundary_loss_val, epoch_log)
-        #         # writer.add_scalar('s_miou', s_miou, epoch_log)
-        #         # writer.add_scalar('p_miou', p_miou, epoch_log)
-        #         writer.add_scalar('loss_val', loss_val, epoch_log)
-        #         writer.add_scalar('f1_val', f1, epoch_log)
-        #         # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
-        #         # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
-        #         is_best = f1 > best_f1_score
-        #         best_f1_score = max(f1, best_f1_score)
+            if main_process():
+                # writer.add_scalar('loss_val', loss_val, epoch_log)
+                writer.add_scalar('ASA_val', asa, epoch_log)
+                writer.add_scalar('F1_val', f1_score, epoch_log)
+                writer.add_scalar('BR_val', br, epoch_log)
+                writer.add_scalar('BP_val', bp, epoch_log)
+                # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
+                # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
+
+        is_best = f1_score > best_f1_score
+        best_f1_score = max(f1_score, best_f1_score)
+        asa_is_best = asa > best_asa
+        best_asa = max(asa, best_asa)
 
         # if (epoch_log % args.save_freq == 0) and main_process():
         #     if not os.path.exists(args.save_path + "/model/"):
@@ -860,7 +863,7 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
             onehot_label = label2one_hot(semantic_gt, args['classes'])
-            spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+            type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
                  w_normal_dis, rec_param, contrastive_loss = model([coord, rgb, offset], onehot_label, semantic_gt, label, param, normals) # superpoint
             # type_loss = criterion(type_per_point, semantic)
             re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
@@ -1044,26 +1047,14 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
             logger.info('Test: [{}/{}] '
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
-                        # 'LS_type {loss_type_meter.val:.4f} '
-                        'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
-                        'LS_re_label {loss_re_label_meter.val:.4f} '
-                        'LS_re_sp {loss_re_sp_meter.val:.4f} '
-                        'LS_re_norm {loss_re_norm_meter.val:.4f} '
-                        'LS_norm_consis {loss_norm_consis_meter.val:.4f} '
-                        'LS_re_param {loss_re_param_meter.val:.4f} '
-                        'LS_p2sp_contrast {loss_p2sp_contrast_meter.val:.4f} '
-                        'Loss {loss_meter.val:.4f} '.format(i + 1, len(val_loader),
+                        'ASA {current_asa:.4f} '
+                        'BR {current_br:.4f} '
+                        'BP {current_bp:.4f} '.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
-                                                        #   loss_type_meter=loss_type_meter,
-                                                          loss_re_xyz_meter=loss_re_xyz_meter,
-                                                          loss_re_label_meter=loss_re_label_meter,
-                                                          loss_re_sp_meter=loss_re_sp_meter,
-                                                          loss_re_norm_meter=loss_re_norm_meter,
-                                                          loss_norm_consis_meter=loss_norm_consis_meter,
-                                                          loss_re_param_meter=loss_re_param_meter,
-                                                          loss_p2sp_contrast_meter=loss_p2sp_contrast_meter,
-                                                          loss_meter=loss_meter))
+                                                          current_asa=confusion_matrix.get_overall_accuracy(),
+                                                          current_br=BR_meter.value()[0],
+                                                          current_bp=BP_meter.value()[0]))
 
     asa = confusion_matrix.get_overall_accuracy()
     br = BR_meter.value()[0]
@@ -1086,7 +1077,7 @@ def validate(val_loader, model, criterion, criterion_re_xyz, criterion_re_label,
     #     # logger.info('Val result: Seg_mIoU/Type_mIoU {:.4f}/{:.4f}.'.format(s_iou_meter.avg, type_iou_meter.avg))
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
 
-    return loss_meter.avg, br, bp, f1_score
+    return loss_meter.avg, asa, br, bp, f1_score
     # return s_iou_meter.avg, type_iou_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 

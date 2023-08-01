@@ -260,7 +260,7 @@ class superpoint_transformer(nn.Module):
         self.use_softmax = use_softmax
         self.use_norm = use_norm
         self.last = last
-        self.share_planes = 2
+        self.share_planes = int(ch_wc2p_fea[0] / ch_wc2p_fea[1])
         in_planes = ch_wc2p_fea[0]
         mid_planes = ch_wc2p_fea[0]
         out_planes = ch_wc2p_fea[1]
@@ -274,6 +274,16 @@ class superpoint_transformer(nn.Module):
                                     nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
                                     nn.Linear(out_planes, out_planes))
         self.softmax = nn.Softmax(dim=1)
+
+        self.linear_q1 = nn.Linear(3, mid_planes)
+        self.linear_k1 = nn.Linear(3, mid_planes)
+        self.linear_v1 = nn.Linear(3, mid_planes)
+        self.linear_p1 = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3), nn.ReLU(inplace=True), nn.Linear(3, mid_planes))
+        self.linear_w1 = nn.Sequential(nn.BatchNorm1d(mid_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(mid_planes, out_planes),
+                                    nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes, out_planes))
+        self.softmax1 = nn.Softmax(dim=1)
 
     def forward(self, sp_fea, sp_xyz, o_p_fea, p_xyz, c2p_idx_abs, c2p_idx, cluster_idx, offset, sp_offset):
         # sp_fea: b x m x c
@@ -298,9 +308,33 @@ class superpoint_transformer(nn.Module):
         bi_w = ((v_sp_fea + p_e).view(n, nc2p, s, c // s) * w.unsqueeze(2)).view(n, nc2p, c)  # (n, nc2p, c)
         bi_w = bi_w.sum(2).view(n, nc2p)  # (n, nc2p)
 
+        # n, nc2p = c2p_idx_abs.size()    # n: 点云中点的个数, nc2p: 每个点最近的超点个数
+        q_p_xyz = self.linear_q1(p_xyz)   # n x c
+        k_sp_xyz = self.linear_k1(sp_xyz)   # m x c
+        v_sp_xyz = self.linear_v1(sp_xyz)   # m x c_out
+        k_sp_xyz = pointops_sp_v2.grouping(k_sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        v_sp_xyz = pointops_sp_v2.grouping(v_sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        p_e1 = pointops_sp_v2.grouping(sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x 3
+        for i, layer in enumerate(self.linear_p1): p_e1 = layer(p_e1.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_e1)    # (n, nc2p, c)
+        w1 = k_sp_xyz - q_p_xyz.unsqueeze(1).repeat(1, nc2p, 1) + p_e1    # (n, nc2p, c)
+        for i, layer in enumerate(self.linear_w1): w1 = layer(w1.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w1)
+        w1 = self.softmax(w1)  # (n, nsample, c)
+        c = v_sp_xyz.shape[2]; s = self.share_planes
+        bi_w1 = ((v_sp_xyz + p_e1).view(n, nc2p, s, c // s) * w.unsqueeze(2)).view(n, nc2p, c)  # (n, nc2p, c)
+        bi_w1 = bi_w1.sum(2).view(n, nc2p)  # (n, nc2p)
+
+        bi_w *= bi_w1
+
         asso_matrix = F.softmax(bi_w, dim=1)  # (n, nc2p)
 
-        return asso_matrix
+        f, sp_nei_cnt = pointops_sp_v2.assomatrixfloat(nc2p, offset, sp_offset, asso_matrix, c2p_idx, cluster_idx.unsqueeze(-1))
+
+        sp_sum = f.sum(dim=1, keepdim=True)                 # b x m x 1
+        sp_fea = torch.matmul(f, o_p_fea) / (sp_sum+1e-8)   # (b, m, n) X (b, n, c) -> (b, m, c)
+        
+        sp_xyz = torch.matmul(f, p_xyz) / (sp_sum+1e-8)     # (b, m, n) X (b, n, 3) -> (b, m, 3)
+
+        return asso_matrix, sp_fea, sp_xyz
 
 
 class CrossAttentionLayer_p2sp(nn.Module):
@@ -785,3 +819,100 @@ def infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label, tempe
     loss = -torch.log(pos / neg + 1e-8).mean()
 
     return loss
+
+
+class LPE_stn_recurrent(nn.Module):
+    def __init__(self, input_channels, args):
+        super().__init__()
+        self.stn = LPE_STNKD_recurrent(input_channels)
+        add = 0
+        if args['use_rgb']:
+            add += 3
+        if args['ver_value'] == 'geof':
+            add += 4
+        
+        self.mlps = nn.Sequential(
+            nn.Linear(3+add, 32),
+            nn.BatchNorm1d(32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True)
+        )
+        self.fcs=nn.Sequential(
+            nn.Linear(136+add, 64),
+            nn.BatchNorm1d(64), 
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, clouds, clouds_global):
+        # bn x c x 20
+        # bn x 7
+        # out: bn x 32
+
+        b, _, _ = clouds.size()
+        t_m = self.stn(clouds[:, :2, :])    # bn x 2 x 20 -> bn x 2 x 2
+        
+        # (bn, 20, 2) x (bn, 2, 2) -> (bn, 20, 2) -> (bn, 2, 20)
+        # b x 2 x n x 20 -> b x n x 2 x 20 -> bn x 2 x 20
+        tmp = clouds[:,:2,:]
+        # bn x 20 x 2
+        transf=torch.bmm(tmp.transpose(1, 2).contiguous(), t_m).transpose(1,2).contiguous()
+
+        # bn x 2 x 20 -> b x n x 2 x 20 -> b x 2 x n x 20
+        transf = transf.view(b, 2, 20).contiguous()
+
+        clouds = torch.cat([transf, clouds[:,2:,:]], 1).transpose(1, 2).contiguous()   # bn x c x 20
+
+        # clouds_global: b x 7 x n + bn x 4 -> b x 7 x n + b x n x 4 -> b x 7 x n + b x 4 x n -> bn x 11
+        clouds_global = torch.cat([clouds_global, t_m.view(-1,4).contiguous()], 1)
+        
+        # clouds=self.mlps(clouds)   # bn x 128 x 20
+        for i, layer in enumerate(self.mlps): clouds = layer(clouds.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 1 else layer(clouds)
+        clouds=clouds.max(dim=1, keepdim=False)[0]     # bn x 128
+        clouds=torch.cat([clouds, clouds_global],1)     # bn x 139
+        return self.fcs(clouds)
+
+
+class LPE_STNKD_recurrent(nn.Module):
+    def __init__(self, input_channels=2):
+        super(LPE_STNKD_recurrent, self).__init__()
+        self.input_channels = input_channels
+        self.mlp1 = nn.Sequential(
+            nn.Linear(input_channels, 16),
+            nn.BatchNorm1d(16),
+            nn.ReLU(inplace=True),
+            nn.Linear(16, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True)
+        )
+        self.mlp2 = nn.Sequential(
+            nn.Linear(128, 32), 
+            nn.BatchNorm1d(32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 16),
+            nn.BatchNorm1d(16),
+            nn.ReLU(inplace=True),
+            nn.Linear(16, input_channels * input_channels)
+        )
+
+    def forward(self, x):
+        # x: bn x 2 x 20
+        
+        # x = self.mlp1(x.transpose(1, 2).contiguous())    # bn x 20 x 128
+        x = x.transpose(1, 2).contiguous()      # bn x 20 x 2
+        for i, layer in enumerate(self.mlp1): x = layer(x.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 1 else layer(x)
+        x = x.max(dim=1, keepdim=False)[0]   # bn x 128
+
+        x = self.mlp2(x)    # bn x 4
+        # x = x.transpose(1, 2).contiguous().view(-1, 4).contiguous()     # bn x 4
+        I = torch.eye(self.input_channels).view(-1).contiguous().to(x.device)   # 4
+        x = x + I
+        x = x.view(-1, self.input_channels, self.input_channels)
+        return x    # bn x 2 x 2
