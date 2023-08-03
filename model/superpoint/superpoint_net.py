@@ -17,7 +17,7 @@ from lib.pointops_sp_v2.functions import pointops_sp_v2
 from modules import learn_SLIC_calc_v1_new, init_fea, calc_sp_fea, \
     point_normal_similarity_loss, calc_sp_normal, learn_SLIC_calc_v2, calc_sp_fea_v2, \
     Contrastive_InfoNCE_loss_sp, Contrastive_InfoNCE_loss_p2sp, Contrastive_InfoNCE_loss_re_p_fea, infoNCE_loss_p2sp, \
-    superpoint_transformer, superpoint_transformer_v2, LPE_stn_recurrent
+    superpoint_transformer, superpoint_transformer_v2, LPE_stn_recurrent, superpoint_transformer_v3
 
 
 class PointTransformerLayer(nn.Module):
@@ -1234,13 +1234,13 @@ class SuperPointNet_FCN(nn.Module):
         self.dec2 = self._make_dec(block, planes[1], 2, share_planes, nsample=nsample[1])  # fusion p3 and p2
         self.dec1 = self._make_dec(block, planes[0], 2, share_planes, nsample=nsample[0])  # fusion p2 and p1
         self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], k))
-        self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
-        self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
-        self.embedding64 = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 64))
-        # self.spmlp = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
-        self.parameter = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 22))
-        self.asso = nn.Linear(planes[0], self.nc2p)
-        self.softmax = nn.Softmax(1)
+        # self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 2))
+        # self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+        # self.embedding64 = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 64))
+        # # self.spmlp = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+        # self.parameter = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], 22))
+        # self.asso = nn.Linear(planes[0], self.nc2p)
+        # self.softmax = nn.Softmax(1)
 
         # self.learn_SLIC_calc_1 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
         #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
@@ -1254,29 +1254,32 @@ class SuperPointNet_FCN(nn.Module):
         # self.learn_SLIC_calc_4 = learn_SLIC_calc_v1_new(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
         #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
-        self.learn_SLIC_calc_1 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+        # self.learn_SLIC_calc_1 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        self.learn_SLIC_calc_2 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+        # self.learn_SLIC_calc_2 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        self.learn_SLIC_calc_3 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False)
+        # self.learn_SLIC_calc_3 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        self.learn_SLIC_calc_4 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        # self.learn_SLIC_calc_4 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        self.superpoint_transformer = superpoint_transformer_v3(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
-        self.superpoint_transformer = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+        # self.superpoint_transformer = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
-        self.superpoint_transformer1 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+        # self.superpoint_transformer1 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
-        self.superpoint_transformer2 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+        # self.superpoint_transformer2 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
-        self.superpoint_transformer3 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+        # self.superpoint_transformer3 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
         # self.superpoint_transformer = superpoint_transformer_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
         #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
@@ -1359,57 +1362,66 @@ class SuperPointNet_FCN(nn.Module):
         #     o3d.io.write_point_cloud('visual/feature_heatmap/{}.ply'.format(i), pcd)
         
         if self.IA_FPS:
-            # 实例感知FPS, 仅用于test阶段
+        # 实例感知FPS, 仅用于test阶段
             point_semantic_scores = F.softmax(type_per_point, dim=1)
-            bigger_condition = torch.any(point_semantic_scores[:, :3] >= 0.1, dim=-1)     # 较大语义块的点
+            bigger_condition = torch.any(point_semantic_scores[:, :3] >= 0.1, dim=-1)   # 较大语义块的点
             smaller_condition = ~bigger_condition
-            # 计算offset
-            for i in range(o0.shape[0]):
-                add_rate = self.add_rate
-                if i == 0:
-                    bigger_offset = torch.sum(bigger_condition[:o0[i]]).unsqueeze(0)
-                    smaller_offset = torch.sum(smaller_condition[:o0[i]]).unsqueeze(0)
-                    while int(o0[i].item() * self.rate) < int(smaller_offset.item() * (self.rate + add_rate)):     # 防止超点中心数量过多，降低采样率
-                        add_rate /= 2
-                    smaller_sample_offset = [int(smaller_offset.item() * (self.rate + add_rate))]  # 较小语义块，增加采样率
-                    bigger_sample_offset = [int(o0[i] * self.rate) - smaller_sample_offset[0]]
-                    bigger_count = bigger_sample_offset[0]
-                    smaller_count = smaller_sample_offset[0]
-                else:
-                    bigger_pt_sum = torch.sum(bigger_condition[o0[i-1]:o0[i]]).unsqueeze(0)
-                    smaller_pt_sum = torch.sum(smaller_condition[o0[i-1]:o0[i]]).unsqueeze(0)
-                    bigger_offset = torch.cat([bigger_offset, bigger_pt_sum + bigger_offset[i-1]])
-                    smaller_offset = torch.cat([smaller_offset, smaller_pt_sum + smaller_offset[i-1]])
-                    while int((o0[i].item() - o0[i-1].item()) * self.rate) < int(smaller_pt_sum.item() * (self.rate + add_rate)):     # 防止超点中心数量过多，降低采样率
-                        add_rate /= 2
-                    smaller_count += int(smaller_pt_sum.item() * (self.rate + add_rate))
-                    bigger_count += int((o0[i] - o0[i-1]) * self.rate) - int(smaller_pt_sum.item() * (self.rate + add_rate))
-                    bigger_sample_offset.append(bigger_count)
-                    smaller_sample_offset.append(smaller_count)
-            bigger_offset = bigger_offset.int()
-            smaller_offset = smaller_offset.int()
-            bigger_sample_offset = torch.cuda.IntTensor(bigger_sample_offset)
-            smaller_sample_offset = torch.cuda.IntTensor(smaller_sample_offset)
-            bigger_idx = torch.nonzero(bigger_condition).view(-1).int()    # 每个点对应的原索引
-            smaller_idx = torch.nonzero(smaller_condition).view(-1).int()    # 每个点对应的原索引
-            # bigger_pt = p0[bigger_idx]
-            bigger_pt = pointops_sp_v2.gathering(p0.transpose(0, 1).contiguous(), bigger_idx).transpose(0, 1).contiguous()
-            # smaller_pt = p0[smaller_idx]
-            smaller_pt = pointops_sp_v2.gathering(p0.transpose(0, 1).contiguous(), smaller_idx).transpose(0, 1).contiguous()
-            bigger_cluster_idx = pointops.furthestsampling(bigger_pt, bigger_offset, bigger_sample_offset)
-            smaller_cluster_idx = pointops.furthestsampling(smaller_pt, smaller_offset, smaller_sample_offset)
-            bigger_cluster_idx = bigger_idx[bigger_cluster_idx.long()]
-            # bigger_cluster_idx = pointops_sp_v2.gathering(bigger_idx.unsqueeze(0).float(), bigger_cluster_idx).squeeze().int()
-            smaller_cluster_idx = smaller_idx[smaller_cluster_idx.long()]
-            # smaller_cluster_idx = pointops_sp_v2.gathering(smaller_idx.unsqueeze(0).float(), smaller_cluster_idx).squeeze().int()
             for i in range(o0.shape[0]):
                 if i == 0:
-                    cluster_idx = torch.cat([bigger_cluster_idx[:bigger_sample_offset[i]], smaller_cluster_idx[:smaller_sample_offset[i]]])
-                    n_o = (bigger_sample_offset[i] + smaller_sample_offset[i]).unsqueeze(0)
+                    bigger_c = bigger_condition[:o0[i]]
+                    bigger_i = torch.nonzero(bigger_c).view(-1).int()
+                    smaller_c = smaller_condition[:o0[i]]
+                    smaller_i = torch.nonzero(smaller_c).view(-1).int()
+                    pt = p0[:o0[i]]
+                    pt_big = pt[bigger_c]
+                    pt_small = pt[smaller_c]
+                    offset_b = torch.cuda.IntTensor([len(pt_big)])
+                    offset_s = torch.cuda.IntTensor([len(pt_small)])
+                    sp_offset_s = (offset_s * (self.rate+self.add_rate)).int()
+                    sp_offset_b = (int(len(pt) * self.rate) - sp_offset_s).int()
+                    if sp_offset_s[0] < 1 or sp_offset_b[0] < 1:
+                        pt_i = torch.arange(0, o0[i]).to(pt.device).int()
+                        offset_pt = torch.cuda.IntTensor([len(pt)])
+                        sp_offset_pt = (offset_pt * self.rate).int()
+                        cluster_idx_ = pointops.furthestsampling(pt, offset_pt, sp_offset_pt)
+                        cluster_idx = pt_i[cluster_idx_.long()]
+                        n_o = [len(cluster_idx)]
+                        continue
+                    cluster_idx_s = pointops.furthestsampling(pt_small, offset_s, sp_offset_s)
+                    cluster_idx_b = pointops.furthestsampling(pt_big, offset_b, sp_offset_b)
+                    cluster_idx_s = smaller_i[cluster_idx_s.long()]
+                    cluster_idx_b = bigger_i[cluster_idx_b.long()]
+                    cluster_idx = torch.cat([cluster_idx_s, cluster_idx_b])
+                    n_o = [len(cluster_idx)]
                 else:
-                    cluster_idx = torch.cat([cluster_idx, bigger_cluster_idx[bigger_sample_offset[i-1]:bigger_sample_offset[i]], smaller_cluster_idx[smaller_sample_offset[i-1]:smaller_sample_offset[i]]])
-                    n_o = torch.cat([n_o, (bigger_sample_offset[i] + smaller_sample_offset[i]).unsqueeze(0)])
-            del bigger_cluster_idx, smaller_cluster_idx, bigger_sample_offset, smaller_sample_offset, bigger_offset, smaller_offset, bigger_idx, smaller_idx
+                    bigger_c = bigger_condition[o0[i-1]:o0[i]]
+                    bigger_i = torch.nonzero(bigger_c).view(-1).int() + o0[i-1]
+                    smaller_c = smaller_condition[o0[i-1]:o0[i]]
+                    smaller_i = torch.nonzero(smaller_c).view(-1).int() + o0[i-1]
+                    pt = p0[o0[i-1]:o0[i]]
+                    pt_big = pt[bigger_c]
+                    pt_small = pt[smaller_c]
+                    offset_b = torch.cuda.IntTensor([len(pt_big)])
+                    offset_s = torch.cuda.IntTensor([len(pt_small)])
+                    sp_offset_s = (offset_s * (self.rate+self.add_rate)).int()
+                    sp_offset_b = (int(len(pt) * self.rate) - sp_offset_s).int()
+                    if sp_offset_s[0] < 1 or sp_offset_b[0] < 1:
+                        pt_i = torch.arange(o0[i-1], o0[i]).to(pt.device).int()
+                        offset_pt = torch.cuda.IntTensor([len(pt)])
+                        sp_offset_pt = (offset_pt * self.rate).int()
+                        cluster_idx_ = pointops.furthestsampling(pt, offset_pt, sp_offset_pt)
+                        cluster_idx_ = pt_i[cluster_idx_.long()]
+                        cluster_idx = torch.cat([cluster_idx, cluster_idx_])
+                        n_o.append(len(cluster_idx))
+                        continue
+                    cluster_idx_s = pointops.furthestsampling(pt_small, offset_s, sp_offset_s)
+                    cluster_idx_b = pointops.furthestsampling(pt_big, offset_b, sp_offset_b)
+                    cluster_idx_s = smaller_i[cluster_idx_s.long()]
+                    cluster_idx_b = bigger_i[cluster_idx_b.long()]
+                    cluster_idx_ = torch.cat([cluster_idx_s, cluster_idx_b])
+                    cluster_idx = torch.cat([cluster_idx, cluster_idx_])
+                    n_o.append(len(cluster_idx))
+            n_o = torch.cuda.IntTensor(n_o)
         
         else:
             # number of clusters for FPS
@@ -1448,7 +1460,7 @@ class SuperPointNet_FCN(nn.Module):
 
         p_fea = x1  # n × 32
         # # p_fea = self.spmlp(x1)
-        sp_fea = torch.matmul(asso_matrix, x1) / sp_nei_cnt
+        sp_fea = torch.matmul(asso_matrix, p_fea) / sp_nei_cnt
         # # sp_fea = init_fea(p_fea, asso_matrix, sp_nei_cnt, o0)
         # # sp_fea: b × m × 32   initial superpoints features
 
@@ -1477,9 +1489,9 @@ class SuperPointNet_FCN(nn.Module):
 
         # 超点transformer
         fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
-        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
-        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
-        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
 
         infoNCE_loss_4 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
         
@@ -1757,3 +1769,336 @@ class SuperPointNet_PointNet(nn.Module):
             return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
         else:
             return type_per_point, final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+
+
+def Superpoint_queryandgroup(c2p_idx, nsample, xyz, new_xyz, feat, idx, offset, new_offset, use_xyz=True):
+    """
+    input: xyz: (n, 3), new_xyz: (m, 3), feat: (n, c), idx: (m, nsample), offset: (b), new_offset: (b)
+    output: new_feat: (m, c+3, nsample), grouped_idx: (m, nsample), c2p_idx: (n, k)
+    """
+    assert xyz.is_contiguous() and new_xyz.is_contiguous() and feat.is_contiguous()
+    if new_xyz is None:
+        new_xyz = xyz
+    if idx is None:
+        idx, _ = pointops.knnquery(nsample, xyz, new_xyz, offset, new_offset) # (m, nsample)
+        idx = torch.cat([idx, c2p_idx], dim=1)  # 每个点添加最近的超点作为knn的一部分
+        nsample = nsample + c2p_idx.shape[1]
+
+    n, m, c = xyz.shape[0], new_xyz.shape[0], feat.shape[1]
+    grouped_xyz = xyz[idx.view(-1).long(), :].view(m, nsample, 3) # (m, nsample, 3)
+    #grouped_xyz = grouping(xyz, idx) # (m, nsample, 3)
+    grouped_xyz -= new_xyz.unsqueeze(1) # (m, nsample, 3)
+    grouped_feat = feat[idx.view(-1).long(), :].view(m, nsample, c) # (m, nsample, c)
+    #grouped_feat = grouping(feat, idx) # (m, nsample, c)
+
+    if use_xyz:
+        return torch.cat((grouped_xyz, grouped_feat), -1) # (m, nsample, 3+c)
+    else:
+        return grouped_feat
+
+class PointSuperpointTransformerLayer(nn.Module):
+    def __init__(self, in_planes, out_planes, share_planes=8, nsample=16):
+        super().__init__()
+        self.mid_planes = mid_planes = out_planes // 1
+        self.out_planes = out_planes
+        self.share_planes = share_planes
+        self.nsample = nsample
+        self.linear_q = nn.Linear(in_planes, mid_planes)
+        self.linear_k = nn.Linear(in_planes, mid_planes)
+        self.linear_v = nn.Linear(in_planes, out_planes)
+        self.linear_p = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3), nn.ReLU(inplace=True), nn.Linear(3, out_planes))
+        self.linear_w = nn.Sequential(nn.BatchNorm1d(mid_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(mid_planes, mid_planes // share_planes),
+                                    nn.BatchNorm1d(mid_planes // share_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes // share_planes, out_planes // share_planes))
+        self.softmax = nn.Softmax(dim=1)
+        
+    def forward(self, pxo, c2p_idx) -> torch.Tensor:
+        # c2p_idx : 每个点最近的k个超点中心索引（基于n） （n，k）
+        p, x, o = pxo  # (n, 3), (n, c), (b)
+        x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
+        x_k = Superpoint_queryandgroup(c2p_idx, self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
+        x_v = Superpoint_queryandgroup(c2p_idx, self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
+        p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
+        for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
+        w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)
+        for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
+        w = self.softmax(w)  # (n, nsample, c)
+        n, nsample, c = x_v.shape; s = self.share_planes
+        x = ((x_v + p_r).view(n, nsample, s, c // s) * w.unsqueeze(2)).sum(1).view(n, c)
+        return x
+
+class PointSuperpointTransformerBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, share_planes=8, nsample=16):
+        super(PointSuperpointTransformerBlock, self).__init__()
+        self.linear1 = nn.Linear(in_planes, planes, bias=False)
+        self.bn1 = nn.BatchNorm1d(planes)
+        self.transformer2 = PointSuperpointTransformerLayer(planes, planes, share_planes, nsample)
+        self.bn2 = nn.BatchNorm1d(planes)
+        self.linear3 = nn.Linear(planes, planes * self.expansion, bias=False)
+        self.bn3 = nn.BatchNorm1d(planes * self.expansion)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, pxo, c2p_idx):
+        p, x, o = pxo  # (n, 3), (n, c), (b)
+        identity = x
+        x = self.relu(self.bn1(self.linear1(x)))
+        x = self.relu(self.bn2(self.transformer2([p, x, o], c2p_idx)))
+        x = self.bn3(self.linear3(x))
+        x += identity
+        x = self.relu(x)
+        return [p, x, o]
+
+class PointSuperpoingTransformer_Encoder(nn.Module):
+    
+    def __init__(self, input_channels=6, args=None):
+        super(PointSuperpoingTransformer_Encoder, self).__init__()
+
+        self.nsamples = args.get('nsamples', [8, 16, 16, 16, 16])
+        self.strides = args.get('strides', [None, 4, 4, 4, 4])
+        self.planes = args.get('planes', [64, 128, 256, 512])
+        # self.blocks = args.get('blocks', [2, 3, 4, 6, 3])
+        self.c = input_channels
+
+        # encoder
+        self.in_mlp = nn.Sequential(
+            nn.Linear(input_channels, self.planes[0], bias=False),
+            nn.BatchNorm1d(self.planes[0]),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.planes[0], self.planes[0], bias=False),
+            nn.BatchNorm1d(self.planes[0]),
+            nn.ReLU(inplace=True)
+        )
+
+        self.PtBlock1 = PointSuperpointTransformerBlock(self.planes[0], self.planes[0], nsample=10)     # nsample = k + 当前设置值
+        self.PtBlock2 = PointSuperpointTransformerBlock(self.planes[0], self.planes[0], nsample=10)
+        self.PtBlock3 = PointSuperpointTransformerBlock(self.planes[0], self.planes[0], nsample=10)
+        
+        self.mlp1 = nn.Linear(256, 1024)
+        self.bnmlp1 = nn.BatchNorm1d(1024)
+
+    # def _break_up_pc(self, pc):
+    #     xyz = pc[..., 0:3].contiguous().unsqueeze(dim=0)
+    #     features = pc[..., 3:].contiguous().unsqueeze(dim=0) if pc.size(-1) > 3 else deepcopy(xyz)
+    #     return xyz, features
+
+    def forward(self, pxo, c2p_idx):
+        p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
+        # x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
+        
+        # encoder
+        x0 = self.in_mlp(x0)
+
+        p1, x1, o1 = self.PtBlock1([p0, x0, o0], c2p_idx)
+        p2, x2, o2 = self.PtBlock2([p1, x1, o1], c2p_idx)
+        p3, x3, o3 = self.PtBlock3([p2, x2, o2], c2p_idx)
+
+        x_features = torch.cat((x0, x1, x2, x3), dim=1)
+        x = F.relu(self.bnmlp1(self.mlp1(x_features)))
+        # x4 = x.max(dim=2)[0]
+
+        return x, x_features
+
+class PSPTNet(nn.Module):
+
+    def __init__(self, c=6, k=13, args=None):
+        super(PSPTNet, self).__init__()
+
+        self.encoder = PointSuperpoingTransformer_Encoder(input_channels=c, args=args)
+        self.drop = 0.0
+
+        self.conv1 = torch.nn.Linear(1024 + 256, 512)
+
+        self.bn1 = nn.BatchNorm1d(512)
+        self.conv2 = torch.nn.Linear(512, 256)
+
+        self.bn2 = nn.BatchNorm1d(256)
+
+        self.softmax = torch.nn.Softmax(dim=1)
+        self.logsoftmax = torch.nn.LogSoftmax(dim=1)
+        self.tanh = torch.nn.Tanh()
+
+        # self.pt_layer = PointTransformerBlock(512)
+
+        self.mlp_embedding_prob1 = torch.nn.Linear(256, 256)
+        self.mlp_embedding_prob2 = torch.nn.Linear(256, 32)
+        self.bn_embedding_prob1 = nn.BatchNorm1d(256)
+
+        self.mlp_type_prob1 = torch.nn.Linear(256, 256)
+        self.mlp_type_prob2 = torch.nn.Linear(256, k)
+        self.bn_type_prob1 = nn.BatchNorm1d(256)
+
+    def forward(self, pxo, c2p_idx):
+
+        x, first_layer_features = self.encoder(pxo, c2p_idx)
+
+        x = torch.cat([x, first_layer_features], 1)
+
+        x = F.dropout(F.relu(self.bn1(self.conv1(x))), self.drop)
+        x_all = F.dropout(F.relu(self.bn2(self.conv2(x))), self.drop)
+
+        x = F.dropout(F.relu(self.bn_embedding_prob1(self.mlp_embedding_prob1(x_all))), self.drop)
+        embedding = self.mlp_embedding_prob2(x)
+
+        x = F.dropout(F.relu(self.bn_type_prob1(self.mlp_type_prob1(x_all))), self.drop)
+        type_pred = self.mlp_type_prob2(x)
+            
+        return embedding, type_pred
+
+
+class SuperpointNetwork(nn.Module):
+    def __init__(self, c=6, k=13, args=None):
+        super().__init__()
+        self.c = c
+        self.classes = k
+        self.rate = args.rate
+        self.nc2p = args.near_clusters2point
+        self.add_rate = args.add_rate
+        self.IA_FPS = args.IA_FPS
+
+        self.backbone = PSPTNet(self.c, self.classes, args=args)
+
+        self.superpoint_transformer = superpoint_transformer_v3(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+                    bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        # self.superpoint_transformer = superpoint_transformer_v3(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+    def label2one_hot_v2(self, labels, C=10):
+        n = labels.size(0)
+        labels = torch.unsqueeze(labels, dim=0).unsqueeze(0)
+        one_hot = torch.zeros(1, C, n, dtype=torch.long).cuda()         # create black
+        target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
+        return target.type(torch.float32)
+
+    def forward(self, pxo, onehot_label=None, label=None, instance_label=None, param=None, normal_s3dis=None):
+
+        p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
+        x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
+
+        # number of clusters for FPS
+        # num_clusters = 40
+        n_o, count = [int(o0[0].item() * self.rate)], int(o0[0].item() * self.rate)
+        for i in range(1, o0.shape[0]):
+            count += int((o0[i].item() - o0[i-1].item()) * self.rate)
+            n_o.append(count)
+        n_o = torch.cuda.IntTensor(n_o) # 以self.rate倍的比例进行采样
+
+        # calculate idx of superpoints and points
+        # cluster_idx = pointops_sp.furthestsampling_offset(p0, o0, num_clusters)
+        # cluster_idx: b × m
+        cluster_idx = pointops.furthestsampling(p0, o0, n_o)    # m
+        # cluster_xyz = pointops_sp.gathering_offset(p0.transpose(0, 1).contiguous(), o0, cluster_idx).transpose(1, 2).contiguous()
+        # cluster_xyz: b × m × 3
+        cluster_xyz = pointops_sp_v2.gathering(p0.transpose(0, 1).contiguous(), cluster_idx).transpose(0, 1).contiguous()
+
+
+        # c2p_idx: near clusters to each point
+        # (b x m x 3, b x m, n x 3) -> b x n x nc2p, b x n x nc2p
+        # nc2p == 6
+        # c2p_idx, c2p_idx_abs = pointops_sp.knnquerycluster_offset(6, cluster_xyz, cluster_idx, p0, o0)
+        c2p_idx, c2p_idx_abs = pointops_sp_v2.knnquerycluster(self.nc2p, cluster_xyz, cluster_idx, p0, o0, n_o)
+        # c2p_idx: n x 6 与每个点最近的nc2p个超点中心索引(基于n)
+        # c2p_idx_abs: n x 6 与每个点最近的nc2p个超点中心索引(基于m)
+
+        embedding, type_per_point = self.backbone([p0, x0, o0], c2p_idx)
+
+        # association matrix
+        # asso_matrix, sp_nei_cnt, sp_lab = pointops_sp.assomatrixpluslabel_offset(6, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes, o0)
+        asso_matrix, sp_nei_cnt, sp_lab = pointops_sp_v2.assomatrixpluslabel(self.nc2p, o0, n_o, c2p_idx, label.int().unsqueeze(-1), cluster_idx.unsqueeze(-1), self.classes)
+        asso_matrix = asso_matrix.float()
+        sp_nei_cnt = sp_nei_cnt.float()
+        # asso_matrix: b x m x n 点与超点中心关联矩阵
+        # sp_nei_cnt: b x m x 1 每个超点所包含点数
+        # sp_lab: b x m x class 每个超点中点label数量
+
+        p_fea = embedding  # n × 64
+        # # p_fea = self.spmlp(x1)
+        sp_fea = torch.matmul(asso_matrix, p_fea) / sp_nei_cnt
+        # # sp_fea = init_fea(p_fea, asso_matrix, sp_nei_cnt, o0)
+        # # sp_fea: b × m × 32   initial superpoints features
+
+        # # c2p_idx: b x n x 6
+        # # sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # # sp_fea: b x m x c
+        # infoNCE_loss_1 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+            
+        # # sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # # sp_fea: b x m x c
+        # infoNCE_loss_2 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+
+        # # sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # # sp_fea: b x m x c
+        # infoNCE_loss_3 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+
+        # fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
+        # fea_dist, sp_fea, cluster_xyz, sp_xyz_idx = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # # sp_fea: b x m x c
+        # # fea_dist: n * 6
+        # # cluster_xyz: b x m x 3
+        # # sp_xyz_idx: m * 3
+
+        # 超点transformer
+        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+
+        infoNCE_loss_4 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+        
+        final_asso = fea_dist
+
+        p2sp_idx = torch.argmax(final_asso, dim=1, keepdim=False)
+        re_p_xyz = pointops_sp_v2.gathering_cluster(cluster_xyz.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx_abs)
+        sp_label = calc_sp_fea_v2(final_asso, onehot_label.squeeze(0).transpose(0, 1).contiguous(), self.nc2p, c2p_idx, cluster_idx, o0, n_o)
+        c2p_label = pointops_sp_v2.grouping(sp_label.transpose(0, 1).contiguous(), c2p_idx_abs)
+        re_p_label = torch.sum(c2p_label * final_asso.unsqueeze(0), dim=-1, keepdim=False)
+        sp_pseudo_lab = torch.argmax(sp_lab, dim=1, keepdim=False)  # b x m
+        sp_pseudo_lab_onehot = self.label2one_hot_v2(sp_pseudo_lab, self.classes)    # b x class x m
+
+        if normal_s3dis is not None:
+            normal = normal_s3dis   # s3dis数据集中的法向量
+        else:
+            normal = pxo[1]
+        sp_normal = calc_sp_fea_v2(final_asso, normal, self.nc2p, c2p_idx, cluster_idx, o0, n_o)
+        c2p_normal = pointops_sp_v2.grouping(sp_normal.transpose(0, 1).contiguous(), c2p_idx_abs)
+        re_p_normal = torch.sum(c2p_normal * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
+        normal_distance_weight = torch.norm(re_p_xyz.squeeze(0).transpose(0,1).contiguous() - p0, p=2, dim=1)  # 距离越远，权重越小
+        sp_center_normal = pointops_sp_v2.gathering_cluster(re_p_normal.transpose(0, 1).contiguous(), p2sp_idx.int(), c2p_idx).transpose(0, 1).contiguous()
+        contrastive_loss = infoNCE_loss_4  # 每次迭代都计算p2sp对比损失，新的对比损失，点与k个超点进行对比
+        # ------------------------------ reconstruct parameters ----------------------------
+        sp_param = calc_sp_fea_v2(final_asso, param, self.nc2p, c2p_idx, cluster_idx, o0, n_o)
+        c2p_param = pointops_sp_v2.grouping(sp_param.transpose(0, 1).contiguous(), c2p_idx_abs)
+        re_p_param = torch.sum(c2p_param * final_asso.unsqueeze(0), dim=-1, keepdim=False).transpose(0,1).contiguous()
+
+        if normal_s3dis is None:
+            type_per_point = type_per_point # n × classes
+            embedding = self.embedding64(embedding) # n × 128
+            # return final_asso, cluster_idx, c2p_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, fea_dist, p_fea, sp_label.transpose(1, 2).contiguous(), sp_pseudo_lab, sp_pseudo_lab_onehot, normal_loss
+            return embedding, final_asso, cluster_idx, c2p_idx_abs, type_per_point, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+        else:
+            return type_per_point, final_asso, cluster_idx, c2p_idx_abs, re_p_xyz, re_p_label, p_fea, sp_label, sp_pseudo_lab, sp_pseudo_lab_onehot, re_p_normal, sp_center_normal, normal_distance_weight, re_p_param, contrastive_loss
+        '''
+        final_asso: b*n*6 点与最近6个超点中心关联矩阵, 用于计算评价指标与可视化
+        cluster_idx: b*m 超点中心索引(基于n), 用于计算评价指标与可视化
+        # c2p_idx: b*n*6 每点最近超点中心索引(基于n)
+        c2p_idx_abs: b*n*6 每点最近超点中心索引(基于m), 用于计算评价指标与可视化
+        type_per_point: b*classes*n 每点语义类别得分, 用于语义类别loss
+        re_p_xyz: b x 3 x n 每个点最近的超点中心坐标, 用于compact loss
+        re_p_label: b*classes*n 重建每点的label vector, 用于point label loss
+        # fea_dist: b*n*6
+        p_fea: b*n*64 每点特征
+        sp_label: b*m*13 根据关联矩阵生成超点中心的加权label向量, 用于superpoint label loss
+        sp_pseudo_lab: b*m 超点中心伪标签, 投票生成
+        sp_pseudo_lab_onehot: b*classes*m 超点中心伪标签,独热向量, 用于superpoint label loss
+        re_p_normal: 3*n 重建每点的法向量, 用于normal loss
+        sp_center_normal: 3*m 重建每个超点中心的法向量, 用于normal consistency loss
+        normal_distance_weight: 距离权重, 用于normal and consistency loss
+        re_p_param: 22*n 重建每点的参数, 用于param loss
+        contrastive_loss: 对比损失
+        '''

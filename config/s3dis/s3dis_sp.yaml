@@ -5,7 +5,7 @@ CONFIG:
   #------GPU setting -------------------------------
   for_debug: False
   train_gpu: [0]
-  test_gpu: [6]
+  test_gpu: [4]
 
   # ------------random seed -------------------------
   manual_seed: 123
@@ -20,8 +20,8 @@ CONFIG:
 
   num_point: 8999        # actually 14999+1=15000
   # very important!!!!
-  rate: 0.008             # 0.008 for training and 0.0069 for testing
-  # rate: 0.02
+  # rate: 0.008             # 0.008 for training and 0.0069 for testing
+  rate: 0.0069
   add_rate: 0.002       # 用于IA-FPS，增加的采样率
   IA_FPS: False         # 是否使用IA-FPS
 
@@ -51,6 +51,7 @@ CONFIG:
   # -------------network setting---------------------
   arch: 'superpoint_fcn_net' # network architecture
   # arch: 'superpoint_net' # network architecture
+  # arch: 'PSPT' # network architecture
 
   dropout: 0.3
 
@@ -77,14 +78,14 @@ CONFIG:
   re_sp_loss: 'cel'
   use_semantic_loss: 0    # 0: not use 1: seg 2: seal
 
-  w_re_xyz_loss: 0.0001
+  w_re_xyz_loss: 0.001
   w_re_label_loss: 1.0
   w_re_sp_loss: 1.0
   # w_semantic_loss: 0.0
   w_re_param_loss: 0.0
   w_re_normal_loss: 0.0
   w_normal_consistency_loss: 0.0
-  w_contrastive_loss: 0.0
+  w_contrastive_loss: 0.5
   w_type_loss: 0.0  # 语义类型损失权重，用于IA-FPS
 
   scheduler_update: epoch
@@ -96,6 +97,8 @@ CONFIG:
   step_epoch: 25          # decay learning rate per/epoch
 
   multiplier: 0.1         # multiplier
+
+  spg_out: False
 
   # ------------------evaluation----------------------------
   evaluate: False           # evaluate

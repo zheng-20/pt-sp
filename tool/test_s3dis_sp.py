@@ -44,6 +44,8 @@ from util.sp_util import get_components, perfect_prediction, relax_edge_binary, 
 # from util.SCANNET_dataset import create_scannet_datasets, my_collate_scannet
 # from util.SCANNET_dataset_v1 import create_scannet_datasets_v1, my_collate_scannet_v1
 from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset, MultiEpochsDataLoader
+from util.graphs import compute_sp_graph
+from util.provider import write_spg
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Superpoint Generation')
@@ -96,6 +98,8 @@ def main():
         from model.superpoint.superpoint_net import superpoint_seg_repro as Model
     elif args.arch == 'superpoint_fcn_net':
         from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
+    elif args.arch == 'PSPT':
+        from model.superpoint.superpoint_net import SuperpointNetwork as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     logger.info("load {}.py success!".format(args["arch"]))
@@ -291,7 +295,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
         
         logger.info('xyz: {}'.format(coord.numpy().shape))    # 1 x n x 3
         # th = 500000
-        th = 450000      # 1GB显存4500个点
+        th = 200000      # 1GB显存4500个点
         if coord.size(0) >= th:
             inps, rgbs, normalss, objects, semantics_gt, params, offsets, indexs = split_data(coord.numpy(), rgb.numpy(), normals.numpy(), label.numpy(), semantic_gt.numpy(), param.numpy(), offset, th)
             n = 0
@@ -454,6 +458,17 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
             pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True, trick=True)
             pred_components = [x[0] for x in pred_components]
             cnt_sp_act += len(pred_components)
+
+            if args.spg_out:
+                graph_sp = compute_sp_graph(txyz, 100, pred_in_component, pred_components, semantic_, args.classes)
+                spg_file = os.path.join("/data1/fz20/dataset/S3DIS/Stanford3dDataset_v1.2_Aligned_Version/superpoint_graphs_ours", "Area", filename_)
+                if not os.path.exists(os.path.dirname(spg_file)):
+                    os.makedirs(os.path.dirname(spg_file))
+                try:
+                    os.remove(spg_file)
+                except OSError:
+                    pass
+                write_spg(spg_file, graph_sp, pred_components, pred_in_component)
 
             # 可视化
             if args.visual:

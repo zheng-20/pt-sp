@@ -248,6 +248,99 @@ class learn_SLIC_calc_v2(nn.Module):
         return sp_fea, sp_xyz
 
 
+class superpoint_transformer_v3(nn.Module):
+    """
+    利用transformer编码点与超点中心之间的特征关系, 构建返回association map
+    """
+    def __init__(self, ch_wc2p_fea: List[int], ch_wc2p_xyz: List[int], ch_mlp: List[int],
+                bn=True, use_xyz=True, use_softmax=True, use_norm=True, last=False):
+        super(superpoint_transformer_v3, self).__init__()
+        self.bn = bn
+        self.use_xyz = use_xyz
+        self.use_softmax = use_softmax
+        self.use_norm = use_norm
+        self.last = last
+        self.share_planes = int(ch_wc2p_fea[0] / ch_wc2p_fea[1])
+        in_planes = ch_wc2p_fea[0]
+        mid_planes = ch_wc2p_fea[0]
+        out_planes = ch_wc2p_fea[1]
+
+        self.linear_q = nn.Linear(in_planes, mid_planes)
+        self.linear_k = nn.Linear(in_planes, mid_planes)
+        self.linear_v = nn.Linear(in_planes, mid_planes)
+        self.linear_xyz = nn.Linear(3, mid_planes)
+        self.linear_p = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3), nn.ReLU(inplace=True), nn.Linear(3, mid_planes))
+        self.linear_w = nn.Sequential(nn.BatchNorm1d(mid_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(mid_planes, out_planes),
+                                    nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+                                    nn.Linear(out_planes, out_planes))
+        self.softmax = nn.Softmax(dim=1)
+
+        # self.linear_q1 = nn.Linear(3, mid_planes)
+        # self.linear_k1 = nn.Linear(3, mid_planes)
+        # self.linear_v1 = nn.Linear(3, mid_planes)
+        # self.linear_p1 = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3), nn.ReLU(inplace=True), nn.Linear(3, mid_planes))
+        # self.linear_w1 = nn.Sequential(nn.BatchNorm1d(mid_planes), nn.ReLU(inplace=True),
+        #               nn.Linear(mid_planes, out_planes),
+        #               nn.BatchNorm1d(out_planes), nn.ReLU(inplace=True),
+        #               nn.Linear(out_planes, out_planes))
+        # self.softmax1 = nn.Softmax(dim=1)
+
+    def forward(self, sp_fea, sp_xyz, o_p_fea, p_xyz, c2p_idx_abs, c2p_idx, cluster_idx, offset, sp_offset):
+        # sp_fea: b x m x c
+        # sp_xyz: b x m x 3
+        # o_p_fea: n x c
+        # p_xyz: n x 3
+        # c2p_idx_abs: n x nc2p 
+        # offset: b
+        
+        n, nc2p = c2p_idx_abs.size()    # n: 点云中点的个数, nc2p: 每个点最近的超点个数
+        q_p_fea = self.linear_q(o_p_fea)   # n x c
+        k_sp_fea = self.linear_k(sp_fea)   # m x c
+        v_sp_fea = self.linear_v(sp_fea)   # m x c_out
+        pe_p_xyz = self.linear_xyz(p_xyz)
+        k_sp_fea = pointops_sp_v2.grouping(k_sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        v_sp_fea = pointops_sp_v2.grouping(v_sp_fea.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        p_e = pointops_sp_v2.grouping(sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x 3
+        for i, layer in enumerate(self.linear_p): p_e = layer(p_e.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_e)    # (n, nc2p, c)
+        p_e = p_e - pe_p_xyz.unsqueeze(1).repeat(1, nc2p, 1)
+        w = k_sp_fea - q_p_fea.unsqueeze(1).repeat(1, nc2p, 1) + p_e    # (n, nc2p, c)
+        for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
+        w = self.softmax(w)  # (n, nsample, c)
+        c = v_sp_fea.shape[2]; s = self.share_planes
+        bi_w = ((v_sp_fea + p_e).view(n, nc2p, s, c // s) * w.unsqueeze(2)).view(n, nc2p, c)  # (n, nc2p, c)
+        bi_w = bi_w.sum(2).view(n, nc2p)  # (n, nc2p)
+
+        # # n, nc2p = c2p_idx_abs.size()    # n: 点云中点的个数, nc2p: 每个点最近的超点个数
+        # q_p_xyz = self.linear_q1(p_xyz)   # n x c
+        # k_sp_xyz = self.linear_k1(sp_xyz)   # m x c
+        # v_sp_xyz = self.linear_v1(sp_xyz)   # m x c_out
+        # k_sp_xyz = pointops_sp_v2.grouping(k_sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        # v_sp_xyz = pointops_sp_v2.grouping(v_sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x c
+        # p_e1 = pointops_sp_v2.grouping(sp_xyz.transpose(0, 1).contiguous(), c2p_idx_abs).permute(1, 2, 0).contiguous()  # n x nc2p x 3
+        # for i, layer in enumerate(self.linear_p1): p_e1 = layer(p_e1.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_e1)    # (n, nc2p, c)
+        # w1 = k_sp_xyz - q_p_xyz.unsqueeze(1).repeat(1, nc2p, 1) + p_e1    # (n, nc2p, c)
+        # for i, layer in enumerate(self.linear_w1): w1 = layer(w1.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w1)
+        # w1 = self.softmax(w1)  # (n, nsample, c)
+        # c = v_sp_xyz.shape[2]; s = self.share_planes
+        # bi_w1 = ((v_sp_xyz + p_e1).view(n, nc2p, s, c // s) * w.unsqueeze(2)).view(n, nc2p, c)  # (n, nc2p, c)
+        # bi_w1 = bi_w1.sum(2).view(n, nc2p)  # (n, nc2p)
+
+        # bi_w *= bi_w1
+
+        asso_matrix = F.softmax(bi_w, dim=1)  # (n, nc2p)
+
+        f, sp_nei_cnt = pointops_sp_v2.assomatrixfloat(nc2p, offset, sp_offset, asso_matrix, c2p_idx, cluster_idx.unsqueeze(-1))
+
+        sp_sum = f.sum(dim=1, keepdim=True)                 # b x m x 1
+        sp_fea = torch.matmul(f, o_p_fea) / (sp_sum+1e-8)   # (b, m, n) X (b, n, c) -> (b, m, c)
+        
+        sp_xyz = torch.matmul(f, p_xyz) / (sp_sum+1e-8)     # (b, m, n) X (b, n, 3) -> (b, m, 3)
+
+        return asso_matrix, sp_fea, sp_xyz
+
+
+
 class superpoint_transformer(nn.Module):
     """
     利用transformer编码点与超点中心之间的特征关系, 构建返回association map

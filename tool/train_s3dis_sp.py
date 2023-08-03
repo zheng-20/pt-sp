@@ -136,6 +136,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.superpoint.superpoint_net import superpoint_seg_repro as Model
     elif args.arch == 'superpoint_fcn_net':
         from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
+    elif args.arch == 'PSPT':
+        from model.superpoint.superpoint_net import SuperpointNetwork as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
@@ -307,7 +309,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             warmup_iters=args.warmup_iters, warmup_ratio=args.warmup_ratio)
     elif args.scheduler == 'MultiStep':
         assert args.scheduler_update == 'epoch'
-        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [int(args.epochs*0.4), int(args.epochs*0.8)]
+        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [int(args.epochs*0.25), int(args.epochs*0.5), int(args.epochs*0.75)]
         gamma = args.gamma if hasattr(args, 'gamma') else 0.1
         if main_process():
             logger.info("scheduler: MultiStep. scheduler_update: {}. milestones: {}, gamma: {}".format(args.scheduler_update, milestones, gamma))
