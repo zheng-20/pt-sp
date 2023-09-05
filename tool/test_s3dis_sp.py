@@ -45,7 +45,7 @@ from util.sp_util import get_components, perfect_prediction, relax_edge_binary, 
 # from util.SCANNET_dataset_v1 import create_scannet_datasets_v1, my_collate_scannet_v1
 from util.sp_S3DIS_dataset import create_s3dis_datasets, collate_s3dis, s3dis_Dataset, MultiEpochsDataLoader
 from util.graphs import compute_sp_graph
-from util.provider import write_spg
+from util.provider import write_spg, write_pred
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Superpoint Generation')
@@ -143,8 +143,8 @@ def main():
     logger.info(model)
     model = torch.nn.DataParallel(model.cuda())
     
-    model_path = os.path.join(args["model_path"], "model", "model_best.pth")
-    # model_path = os.path.join(args["model_path"], "model", "model_best_asa.pth")
+    # model_path = os.path.join(args["model_path"], "model", "model_best.pth")
+    model_path = os.path.join(args["model_path"], "model", "model_best_asa.pth")
     if os.path.isfile(model_path):
         logger.info("=> loading checkpoint '{}'".format(model_path))
         checkpoint = torch.load(model_path)
@@ -268,6 +268,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
     BR_meter = tnt.meter.AverageValueMeter()
     BP_meter = tnt.meter.AverageValueMeter()
     confusion_matrix = metrics.ConfusionMatrix(args['classes'])
+    confusion_matrix_pred = metrics.ConfusionMatrix(args['classes'])
 
     model.eval()
     end = time.time()
@@ -307,6 +308,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
             # all_output = np.zeros((1, coord.size(0), args['classes']), dtype=np.float32)                  # 1 x n x nclass
             all_rec_xyz = np.zeros((coord.size(0), 3), dtype=np.float32)                               # 1 x n x 3
             all_rec_label = np.zeros((coord.size(0), args['classes']), dtype=np.float32)               # 1 x n x nclass
+            all_type_per_point = torch.zeros((coord.size(0), args['classes']), dtype=torch.float32).cuda(non_blocking=True)             # 1 x n x nclass
             all_fea_dist = np.zeros((coord.size(0), args['near_clusters2point']), dtype=np.float32)    # 1 x n x nc2p
             for j in range(len(inps)):
                 n = n + inps[j].shape[0]
@@ -346,6 +348,7 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
                 # logger.info('rec_label: {}'.format(rec_label.shape))
                 all_rec_label[indexs[j], :] = rec_label.transpose((1, 0))
 
+                all_type_per_point[indexs[j], :] = torch.softmax(type_per_point, 1)
 
                 fea_dist = spout.detach().cpu().numpy()  # 1 x n' x nc2p
                 all_fea_dist[indexs[j], :] = fea_dist
@@ -395,12 +398,17 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
             all_rec_xyz = rec_xyz.detach().cpu().numpy()
             all_rec_label = rec_label.detach().cpu().numpy()
             all_fea_dist = spout.detach().cpu().numpy()
+            all_type_per_point = torch.softmax(type_per_point, 1)
             
             coord = coord.cpu()
             semantic_gt = semantic_gt.cpu()
 
         cnt_sp += all_c_idx.shape[0]
         cnt_room += 1
+        all_type_per_point = torch.argmax(all_type_per_point, axis=1)
+        all_type_per_point = label2one_hot(all_type_per_point, args['classes']).squeeze(0).transpose(0,1).contiguous().detach().cpu().numpy()
+        zeros_array = np.zeros((all_type_per_point.shape[0], 1), dtype=np.float32)
+        all_type_per_point = np.concatenate((zeros_array, all_type_per_point), axis=1)
       
         spout = all_fea_dist
         if semantic_gt.shape[-1] == 1:
@@ -449,19 +457,26 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
                 spout_ = spout[:offset[0]]
                 pt_center_index = all_c2p_idx_base[:offset[0]]
                 semantic_ = semantic[:offset[0]].numpy()
+                type_per_point_ = all_type_per_point[:offset[0]]
             else:
                 txyz = coord[offset[bid-1]:offset[bid]].numpy()
                 spout_ = spout[offset[bid-1]:offset[bid]]
                 pt_center_index = all_c2p_idx_base[offset[bid-1]:offset[bid]]
                 semantic_ = semantic[offset[bid-1]:offset[bid]].numpy()
+                type_per_point_ = all_type_per_point[offset[bid-1]:offset[bid]]
             # pred_components, pred_in_component = get_components(init_center, pt_center_index, spout_, getmax=True, trick=False, logger=logger)
             pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True, trick=True)
             pred_components = [x[0] for x in pred_components]
             cnt_sp_act += len(pred_components)
 
             if args.spg_out:
+                area = filename_[:6]
+                if filename_[5] == '5':
+                    filename_ = filename_[12:]
+                else:
+                    filename_ = filename_[7:]
                 graph_sp = compute_sp_graph(txyz, 100, pred_in_component, pred_components, semantic_, args.classes)
-                spg_file = os.path.join("/data1/fz20/dataset/S3DIS/Stanford3dDataset_v1.2_Aligned_Version/superpoint_graphs_ours", "Area", filename_)
+                spg_file = os.path.join("/data1/fz20/dataset/S3DIS/Stanford3dDataset_v1.2_Aligned_Version/spg_ours", area, filename_)
                 if not os.path.exists(os.path.dirname(spg_file)):
                     os.makedirs(os.path.dirname(spg_file))
                 try:
@@ -469,6 +484,21 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
                 except OSError:
                     pass
                 write_spg(spg_file, graph_sp, pred_components, pred_in_component)
+            
+            if args.pred_out:
+                area = filename_[:6]
+                if filename_[5] == '5':
+                    filename_ = filename_[12:]
+                else:
+                    filename_ = filename_[7:]
+                pred_file = os.path.join("/data1/fz20/dataset/S3DIS/Stanford3dDataset_v1.2_Aligned_Version/pred_ours", area, filename_)
+                if not os.path.exists(os.path.dirname(pred_file)):
+                    os.makedirs(os.path.dirname(pred_file))
+                try:
+                    os.remove(pred_file)
+                except OSError:
+                    pass
+                write_pred(pred_file, pred_components, pred_in_component)
 
             # 可视化
             if args.visual:
@@ -481,11 +511,13 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
             #     full_pred = perfect_prediction_base0(pred_components, pred_in_component, labels[bid, :, :].numpy())
             # else:
             full_pred = perfect_prediction(pred_components, pred_in_component, semantic_)
+            pt_pred = perfect_prediction(pred_components, pred_in_component, type_per_point_)
 
             # if args['data_name'] in ['scannet_v1', 'semanticposs']:
             #     confusion_matrix.count_predicted_batch(labels[bid, :, :].numpy(), full_pred)
             # else:
             confusion_matrix.count_predicted_batch(semantic_[:, 1:], full_pred)
+            confusion_matrix_pred.count_predicted_batch(semantic_[:, 1:], pt_pred)
 
             if np.sum(tis_transition) > 0:
                 BR_meter.add((tis_transition.sum()) * compute_boundary_recall(tis_transition, 
@@ -544,6 +576,8 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
                                                         loss_meter=loss_meter))
 
     asa = confusion_matrix.get_overall_accuracy()
+    miou = confusion_matrix.get_average_intersection_union()
+    macc = confusion_matrix.get_mean_class_accuracy()
     br = BR_meter.value()[0]
     bp = BP_meter.value()[0]
     f1_score = 2 * br * bp / (br + bp + 1e-10)
@@ -558,6 +592,8 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
     file_result_txt.write("%d \t %d \t %d \t %d \t %d \n" % (cnt_room, cnt_sp, 1.*cnt_sp/cnt_room, cnt_sp_act, 1.*cnt_sp_act/cnt_room) )
     file_result_txt.write("   ASA \t BR \t BP \t F1 \t Test time\n")
     file_result_txt.write("%.4f \t %.4f \t %.4f \t %.4f \t %.2f \n" % (asa, br, bp, f1_score, test_time) )
+    file_result_txt.write("   OIoU \t OAcc\n")
+    file_result_txt.write("%.4f \t %.4f \n" % (miou, macc) )
 
 if __name__ == '__main__':
     main()

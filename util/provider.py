@@ -585,6 +585,18 @@ def write_spg(file_name, graph_sp, components, in_component):
                              , data=graph_sp["se_volume_ratio"], dtype='float32')
     data_file.create_dataset('se_point_count_ratio'
                              , data=graph_sp["se_point_count_ratio"], dtype='float32')
+
+def write_pred(file_name, components, in_component):
+    """save the partition"""
+    if os.path.isfile(file_name):
+        os.remove(file_name)
+    data_file = h5py.File(file_name, 'w')
+    grp = data_file.create_group('components')
+    n_com = len(components)
+    for i_com in range(0, n_com):
+        grp.create_dataset(str(i_com), data=components[i_com], dtype='uint32')
+    data_file.create_dataset('in_component'
+                             , data=in_component, dtype='uint32')
 #-----------------------------------------------------------------------------
 def read_spg(file_name):
     """read the partition and spg information"""

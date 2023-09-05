@@ -1263,11 +1263,11 @@ class SuperPointNet_FCN(nn.Module):
         # self.learn_SLIC_calc_3 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
         #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False)
 
-        # self.learn_SLIC_calc_4 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
-        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
-
-        self.superpoint_transformer = superpoint_transformer_v3(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        self.learn_SLIC_calc_4 = learn_SLIC_calc_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
                             bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        # self.superpoint_transformer = superpoint_transformer_v3(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
 
         # self.superpoint_transformer = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
         #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
@@ -1364,7 +1364,7 @@ class SuperPointNet_FCN(nn.Module):
         if self.IA_FPS:
         # 实例感知FPS, 仅用于test阶段
             point_semantic_scores = F.softmax(type_per_point, dim=1)
-            bigger_condition = torch.any(point_semantic_scores[:, :3] >= 0.1, dim=-1)   # 较大语义块的点
+            bigger_condition = torch.any(point_semantic_scores[:, :3] >= 0.3, dim=-1)   # 较大语义块的点
             smaller_condition = ~bigger_condition
             for i in range(o0.shape[0]):
                 if i == 0:
@@ -1466,29 +1466,29 @@ class SuperPointNet_FCN(nn.Module):
 
         # # c2p_idx: b x n x 6
         # # sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
-        # sp_fea, cluster_xyz = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # sp_fea, cluster_xyz1 = self.learn_SLIC_calc_1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # # sp_fea: b x m x c
-        # infoNCE_loss_1 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+        # # infoNCE_loss_1 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
             
         # # sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
-        # sp_fea, cluster_xyz = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # sp_fea, cluster_xyz1 = self.learn_SLIC_calc_2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # # sp_fea: b x m x c
-        # infoNCE_loss_2 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+        # # infoNCE_loss_2 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
 
         # # sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
-        # sp_fea, cluster_xyz = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # sp_fea, cluster_xyz1 = self.learn_SLIC_calc_3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # # sp_fea: b x m x c
-        # infoNCE_loss_3 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
+        # # infoNCE_loss_3 = infoNCE_loss_p2sp(sp_fea, p_fea, c2p_idx_abs, c2p_idx, instance_label)
 
         # fea_dist, sp_fea, cluster_xyz = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0)
-        # fea_dist, sp_fea, cluster_xyz, sp_xyz_idx = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
-        # # sp_fea: b x m x c
-        # # fea_dist: n * 6
-        # # cluster_xyz: b x m x 3
-        # # sp_xyz_idx: m * 3
+        fea_dist, sp_fea1, cluster_xyz, sp_xyz_idx = self.learn_SLIC_calc_4(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # sp_fea: b x m x c
+        # fea_dist: n * 6
+        # cluster_xyz: b x m x 3
+        # sp_xyz_idx: m * 3
 
         # 超点transformer
-        fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
+        # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer1(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer2(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
         # fea_dist, sp_fea, cluster_xyz = self.superpoint_transformer3(sp_fea, cluster_xyz, p_fea, p0, c2p_idx_abs, c2p_idx, cluster_idx, o0, n_o)
@@ -2102,3 +2102,97 @@ class SuperpointNetwork(nn.Module):
         re_p_param: 22*n 重建每点的参数, 用于param loss
         contrastive_loss: 对比损失
         '''
+
+
+# 全卷积超点生成网络
+class PT_seg(nn.Module):
+    def __init__(self, block, blocks, c=6, k=13, args=None):
+        super().__init__()
+        self.c = c
+        self.classes = k
+        self.rate = args.rate
+        self.nc2p = args.near_clusters2point
+        self.add_rate = args.add_rate
+        self.IA_FPS = args.IA_FPS
+        self.in_planes, planes = c, [32, 64, 128, 256, 512]
+        fpn_planes, fpnhead_planes, share_planes = 128, 64, 8
+        stride, nsample = [1, 4, 4, 4, 4], [8, 16, 16, 16, 16]
+        self.enc1 = self._make_enc(block, planes[0], blocks[0], share_planes, stride=stride[0], nsample=nsample[0])  # N/1
+        self.enc2 = self._make_enc(block, planes[1], blocks[1], share_planes, stride=stride[1], nsample=nsample[1])  # N/4
+        self.enc3 = self._make_enc(block, planes[2], blocks[2], share_planes, stride=stride[2], nsample=nsample[2])  # N/16
+        self.enc4 = self._make_enc(block, planes[3], blocks[3], share_planes, stride=stride[3], nsample=nsample[3])  # N/64
+        self.enc5 = self._make_enc(block, planes[4], blocks[4], share_planes, stride=stride[4], nsample=nsample[4])  # N/256
+        self.dec5 = self._make_dec(block, planes[4], 2, share_planes, nsample=nsample[4], is_head=True)  # transform p5
+        self.dec4 = self._make_dec(block, planes[3], 2, share_planes, nsample=nsample[3])  # fusion p5 and p4
+        self.dec3 = self._make_dec(block, planes[2], 2, share_planes, nsample=nsample[2])  # fusion p4 and p3
+        self.dec2 = self._make_dec(block, planes[1], 2, share_planes, nsample=nsample[1])  # fusion p3 and p2
+        self.dec1 = self._make_dec(block, planes[0], 2, share_planes, nsample=nsample[0])  # fusion p2 and p1
+        self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], k))
+
+        self.superpoint_transformer = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+                            bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        # self.superpoint_transformer1 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        # self.superpoint_transformer2 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        # self.superpoint_transformer3 = superpoint_transformer(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+        # self.superpoint_transformer = superpoint_transformer_v2(ch_wc2p_fea=[32, 16, 16], ch_wc2p_xyz=[3, 16, 16], ch_mlp=[32, 16, 16],
+        #                     bn=True, use_xyz=True, use_softmax=True, use_norm=False, last=True)
+
+    def _make_enc(self, block, planes, blocks, share_planes=8, stride=1, nsample=16):
+        layers = []
+        layers.append(TransitionDown(self.in_planes, planes * block.expansion, stride, nsample))
+        self.in_planes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+        return nn.Sequential(*layers)
+
+    def _make_dec(self, block, planes, blocks, share_planes=8, nsample=16, is_head=False):
+        layers = []
+        layers.append(TransitionUp(self.in_planes, None if is_head else planes * block.expansion))
+        self.in_planes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample))
+        return nn.Sequential(*layers)
+
+    def label2one_hot(self, labels, C=10):
+        b, n = labels.shape
+        labels = torch.unsqueeze(labels, dim=1)
+        one_hot = torch.zeros(b, C, n, dtype=torch.long).cuda()         # create black
+        target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
+        return target.type(torch.float32)
+    
+    def label2one_hot_v2(self, labels, C=10):
+        n = labels.size(0)
+        labels = torch.unsqueeze(labels, dim=0).unsqueeze(0)
+        one_hot = torch.zeros(1, C, n, dtype=torch.long).cuda()         # create black
+        target = one_hot.scatter_(1, labels.type(torch.long).data, 1)   # retuqire long type
+        return target.type(torch.float32)
+
+    def forward(self, pxo):
+        p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
+        x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
+        p1, x1, o1 = self.enc1([p0, x0, o0])
+        p2, x2, o2 = self.enc2([p1, x1, o1])
+        p3, x3, o3 = self.enc3([p2, x2, o2])
+        p4, x4, o4 = self.enc4([p3, x3, o3])
+        p5, x5, o5 = self.enc5([p4, x4, o4])
+        x5 = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
+        x4 = self.dec4[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5, o5]), o4])[1]
+        x3 = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4, o4]), o3])[1]
+        x2 = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3, o3]), o2])[1]
+        x1 = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1])[1]
+        type_per_point = self.cls(x1) # n × classes
+      
+
+        return type_per_point
+
+
+def pt_seg_repro(**kwargs):
+    model = PT_seg(PointTransformerBlock, [2, 3, 4, 6, 3], **kwargs)
+    return model

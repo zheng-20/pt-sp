@@ -4,8 +4,8 @@
 CONFIG:
   #------GPU setting -------------------------------
   for_debug: False
-  train_gpu: [5]
-  test_gpu: [5]
+  train_gpu: [0]
+  test_gpu: [0]
 
   # ------------random seed -------------------------
   manual_seed: 123
@@ -23,15 +23,15 @@ CONFIG:
   rate: 0.008             # 0.008 for training and 0.0069 for testing
   # rate: 0.0069
   add_rate: 0.002       # 用于IA-FPS，增加的采样率
-  IA_FPS: True         # 是否使用IA-FPS
+  IA_FPS: False         # 是否使用IA-FPS
 
   test_area: 5
   fea_dim: 6              # feature dimension
   use_xyz: True
 
-  global_feat: 'eXYrgb'
-  ver_value: 'ptn'
-  learned_embeddings: True
+  # global_feat: 'eXYrgb'
+  # ver_value: 'ptn'
+  # learned_embeddings: True
   pc_augm_rot: 1
   pc_augm_jitter: 1
 
@@ -49,12 +49,14 @@ CONFIG:
   BR_tolerance: 1
 
   # -------------network setting---------------------
-  arch: 'superpoint_pn_net' # network architecture
+  arch: 'pt_seg_repro' # network architecture
+  # arch: 'superpoint_net' # network architecture
+  # arch: 'PSPT' # network architecture
 
   dropout: 0.3
 
-  batch_size: 48
-  batch_size_val: 28
+  batch_size: 64
+  batch_size_val: 24
   batch_size_test: 1
   ignore_label: -100
 
@@ -83,8 +85,8 @@ CONFIG:
   w_re_param_loss: 0.0
   w_re_normal_loss: 0.0
   w_normal_consistency_loss: 0.0
-  w_contrastive_loss: 0.8
-  w_type_loss: 0.1  # 语义类型损失权重，用于IA-FPS
+  w_contrastive_loss: 0.0
+  w_type_loss: 0.0  # 语义类型损失权重，用于IA-FPS
 
   scheduler_update: epoch
   scheduler: MultiStep
@@ -95,6 +97,9 @@ CONFIG:
   step_epoch: 25          # decay learning rate per/epoch
 
   multiplier: 0.1         # multiplier
+
+  spg_out: False
+  pred_out: False
 
   # ------------------evaluation----------------------------
   evaluate: False           # evaluate

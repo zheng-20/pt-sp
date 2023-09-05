@@ -112,8 +112,8 @@ def main():
 
 
 def main_worker(gpu, ngpus_per_node, argss):
-    global args, best_asa, best_f1_score
-    args, best_asa, best_f1_score = argss, 0, 0
+    global args, best_miou
+    args, best_miou = argss, 0
     if args.distributed:
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
@@ -122,22 +122,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
     # from model.pointtransformer.pointtransformer_seg import BoundaryNet as BoundaryModel
-    if args.arch == 'pointtransformer_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import pointtransformer_seg_repro as Model
-    elif args.arch == 'pointtransformer_primitive_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import PointTransformer_PrimSeg as Model
-    elif args.arch == 'boundarytransformer_primitive_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import BoundaryTransformer_PrimSeg as Model
-    elif args.arch == 'pointtransformer_Unit_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import pointtransformer_Unit_seg_repro as Model
-    elif args.arch == 'boundarypointtransformer_Unit_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import boundarypointtransformer_Unit_seg_repro as Model
-    elif args.arch == 'superpoint_net':
-        from model.superpoint.superpoint_net import superpoint_seg_repro as Model
-    elif args.arch == 'superpoint_fcn_net':
-        from model.superpoint.superpoint_net import superpoint_fcn_seg_repro as Model
-    elif args.arch == 'PSPT':
-        from model.superpoint.superpoint_net import SuperpointNetwork as Model
+    if args.arch == 'pt_seg_repro':
+        from model.superpoint.superpoint_net import pt_seg_repro as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
@@ -214,11 +200,6 @@ def main_worker(gpu, ngpus_per_node, argss):
                 logger.info("use SyncBN")
             # boundarymodel = torch.nn.SyncBatchNorm.convert_sync_batchnorm(boundarymodel).cuda()
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
-        # boundarymodel = torch.nn.parallel.DistributedDataParallel(
-        #     boundarymodel,
-        #     device_ids=[gpu],
-        #     find_unused_parameters=True
-        # )
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[gpu],
@@ -252,8 +233,8 @@ def main_worker(gpu, ngpus_per_node, argss):
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler_state_dict = checkpoint['scheduler']
             #best_iou = 40.0
-            best_f1_score = checkpoint['best_f1_score']
-            best_asa = checkpoint['best_asa']
+            best_miou = checkpoint['best_miou']
+            # best_asa = checkpoint['best_asa']
             if main_process():
                 logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
         else:
@@ -353,27 +334,18 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info("lr: {}".format(scheduler.get_last_lr()))
 
         # loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
-        loss_type, loss_train, loss_re_xyz, loss_re_label, loss_re_sp, loss_re_norm, loss_norm_consis, loss_re_param, loss_p2sp_contrast, f1_score, asa = train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler)
+        loss_type, loss_train, mIoU_train, mAcc_train, allAcc_train= train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
         is_best = False
-        asa_is_best = False
+
         if main_process():
             writer.add_scalar('type_loss_train', loss_type, epoch_log)
-            writer.add_scalar('re_xyz_loss_train', loss_re_xyz, epoch_log)
-            writer.add_scalar('re_label_loss_train', loss_re_label, epoch_log)
-            writer.add_scalar('re_sp_loss_train', loss_re_sp, epoch_log)
-            writer.add_scalar('re_norm_loss_train', loss_re_norm, epoch_log)
-            writer.add_scalar('norm_consis_loss_train', loss_norm_consis, epoch_log)
-            writer.add_scalar('re_param_loss_train', loss_re_param, epoch_log)
-            writer.add_scalar('p2sp_contrast_loss_train', loss_p2sp_contrast, epoch_log)
             writer.add_scalar('loss_train', loss_train, epoch_log)
-            writer.add_scalar('f1_score', f1_score, epoch_log)
-            writer.add_scalar('asa', asa, epoch_log)
-            # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
-            # writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
-            # writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
+            writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
+            writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
+            writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
             # is_best = f1_score > best_f1_score
             # best_f1_score = max(f1_score, best_f1_score)
             # asa_is_best = asa > best_asa
@@ -396,10 +368,8 @@ def main_worker(gpu, ngpus_per_node, argss):
                 # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
                 # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
 
-        is_best = f1_score > best_f1_score
-        best_f1_score = max(f1_score, best_f1_score)
-        asa_is_best = asa > best_asa
-        best_asa = max(asa, best_asa)
+        is_best = mIoU_train > best_miou
+        best_miou = max(mIoU_train, best_miou)
 
         # if (epoch_log % args.save_freq == 0) and main_process():
         #     if not os.path.exists(args.save_path + "/model/"):
@@ -419,16 +389,13 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info('Saving checkpoint to: ' + filename)
             if scheduler is not None:
                 torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
-                             'scheduler': scheduler.state_dict(), 'best_f1_score': best_f1_score, 'is_best': is_best, 'best_asa': best_asa, 'asa_is_best': asa_is_best}, filename)
+                             'scheduler': scheduler.state_dict(), 'best_f1_score': best_miou, 'is_best': is_best}, filename)
             else:
                 torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, filename)
 
             if is_best:
-                logger.info('Best validation f1_score updated to: {:.4f}'.format(best_f1_score))
+                logger.info('Best validation miou updated to: {:.4f}'.format(best_miou))
                 shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
-            if asa_is_best:
-                logger.info('Best validation asa updated to: {:.4f}'.format(best_asa))
-                shutil.copyfile(filename, args.save_path + '/model/model_best_asa.pth')
 
     if main_process():
         writer.close()
@@ -453,26 +420,22 @@ def label2one_hot(labels, C=10):
 def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, criterion_re_sp, optimizer, epoch, scaler, scheduler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    loss_re_xyz_meter = AverageMeter()
-    loss_re_label_meter = AverageMeter()
-    loss_re_sp_meter = AverageMeter()
-    loss_re_norm_meter = AverageMeter()
-    loss_norm_consis_meter = AverageMeter()
-    # loss_sp_contrast_meter = AverageMeter()
-    loss_p2sp_contrast_meter = AverageMeter()
-    # loss_param_meter = AverageMeter()
-    loss_re_param_meter = AverageMeter()
+    # loss_re_xyz_meter = AverageMeter()
+    # loss_re_label_meter = AverageMeter()
+    # loss_re_sp_meter = AverageMeter()
+    # loss_re_norm_meter = AverageMeter()
+    # loss_norm_consis_meter = AverageMeter()
+    # # loss_sp_contrast_meter = AverageMeter()
+    # loss_p2sp_contrast_meter = AverageMeter()
+    # # loss_param_meter = AverageMeter()
+    # loss_re_param_meter = AverageMeter()
     loss_meter = AverageMeter()
-    # intersection_meter = AverageMeter()
-    # union_meter = AverageMeter()
-    # target_meter = AverageMeter()
+    intersection_meter = AverageMeter()
+    union_meter = AverageMeter()
+    target_meter = AverageMeter()
     # feat_loss_meter = AverageMeter()
     loss_type_meter = AverageMeter()
     # boundary_loss_meter = AverageMeter()
-
-    BR_meter = tnt.meter.AverageValueMeter()    # boundary recall
-    BP_meter = tnt.meter.AverageValueMeter()    # boundary precision
-    confusion_matrix = metrics.ConfusionMatrix(args['classes'])
 
     # boundarymodel.train()
     model.train()
@@ -496,141 +459,44 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
 
         use_amp = args.use_amp
         with torch.cuda.amp.autocast(enabled=use_amp):
-            # boundary_pred = boundarymodel([coord, normals, offset])
-            # softmax = torch.nn.Softmax(dim=1)
-            # boundary_pred_ = softmax(boundary_pred)
-            # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
-            onehot_label = label2one_hot(semantic_gt, args['classes'])
-            # primitive_embedding, type_per_point = model([coord, normals, offset], edges, boundary_pred_)
-            type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
-                 w_normal_dis, rec_param, contrastive_loss = model([coord, rgb, offset], onehot_label, semantic_gt, label, param, normals) # superpoint
+            # onehot_label = label2one_hot(semantic_gt, args['classes'])
+            type_per_point = model([coord, normals, offset])
+            # type_per_point, spout, c_idx, c2p_idx_base, rec_xyz, rec_label, p_fea, sp_pred_lab, sp_pseudo_lab, sp_pseudo_lab_onehot, rec_normal, sp_center_normal, \
+            #      w_normal_dis, rec_param, contrastive_loss = model([coord, rgb, offset], onehot_label, semantic_gt, label, param, normals) # superpoint
             # assert type_per_point.shape[1] == args.classes
             if semantic_gt.shape[-1] == 1:
                 semantic_gt = semantic_gt[:, 0]  # for cls
             # loss = criterion(output, target)
             # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             # param_loss = torch.mean(torch.norm(param - parameter, p=2, dim=1, keepdim=False))
-            type_loss = args['w_type_loss'] * criterion(type_per_point, semantic_gt)
+            type_loss = criterion(type_per_point, semantic_gt)
             # boundary_loss = criterion(boundary_pred, boundary)
             # loss = feat_loss + type_loss + boundary_loss
             # re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz.squeeze(0), coord.transpose(0,1).contiguous())    # compact loss
-            re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
-            if args['re_label_loss'] == 'cel':
-                # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
-                re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label.transpose(0,1).contiguous(), semantic_gt) # point label loss
-            elif args['re_label_loss'] == 'mse':
-                re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, onehot_label)
+            # re_xyz_loss = args['w_re_xyz_loss'] * criterion_re_xyz(rec_xyz, coord.transpose(0,1).contiguous())    # compact loss
+            # if args['re_label_loss'] == 'cel':
+            #     # re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, semantic.unsqueeze(0)) # point label loss
+            #     re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label.transpose(0,1).contiguous(), semantic_gt) # point label loss
+            # elif args['re_label_loss'] == 'mse':
+            #     re_label_loss = args['w_re_label_loss'] * criterion_re_label(rec_label, onehot_label)
 
-            if args['re_sp_loss'] == 'cel':
-                re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab) # superpoint label loss
-            elif args['re_sp_loss'] == 'mse':
-                re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
+            # if args['re_sp_loss'] == 'cel':
+            #     re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab) # superpoint label loss
+            # elif args['re_sp_loss'] == 'mse':
+            #     re_sp_loss = args['w_re_sp_loss'] * criterion_re_sp(sp_pred_lab, sp_pseudo_lab_onehot)
             
-            # 重建法线损失以及法线一致性损失
-            re_normal_loss = args['w_re_normal_loss'] * (1 - (1 - w_normal_dis) * torch.sum(normals * rec_normal, dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
-            normal_consistency_loss = args['w_normal_consistency_loss'] * (1 - (1 - w_normal_dis) * torch.sum(sp_center_normal * rec_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            # # 重建法线损失以及法线一致性损失
+            # re_normal_loss = args['w_re_normal_loss'] * (1 - (1 - w_normal_dis) * torch.sum(normals * rec_normal, dim=1, keepdim=False) / (torch.norm(normals, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
+            # normal_consistency_loss = args['w_normal_consistency_loss'] * (1 - (1 - w_normal_dis) * torch.sum(sp_center_normal * rec_normal, dim=1, keepdim=False) / (torch.norm(sp_center_normal, dim=1, keepdim=False) * torch.norm(rec_normal, dim=1, keepdim=False) + 1e-8)).mean()
 
-            # 重建参数损失
-            re_param_loss = args['w_re_param_loss'] * torch.mean(torch.norm(rec_param - param, p=2, dim=1, keepdim=False))
+            # # 重建参数损失
+            # re_param_loss = args['w_re_param_loss'] * torch.mean(torch.norm(rec_param - param, p=2, dim=1, keepdim=False))
 
-            # 对比损失
-            contrastive_loss = args['w_contrastive_loss'] * contrastive_loss
+            # # 对比损失
+            # contrastive_loss = args['w_contrastive_loss'] * contrastive_loss
 
             # 总loss
-            loss = re_xyz_loss + re_label_loss + re_sp_loss + re_normal_loss + normal_consistency_loss + re_param_loss + contrastive_loss + type_loss
-
-        # calculate superpoint metrics
-        for bid in range(offset.shape[0]):
-            tedg_source = edg_source[bid]
-            tedg_target = edg_target[bid]
-            tis_transition = is_transition[bid].numpy()
-            init_center = c_idx.cpu().numpy()
-            if bid == 0:
-                txyz = coord[:offset[0]].cpu().numpy()
-                spout_ = spout[:offset[0]].detach().cpu().numpy()
-                # init_center = c_idx[:sp_offset[0]].cpu().numpy()
-                pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
-                # label_ = label[:offset[0]].cpu().numpy()
-                p_fea_ = p_fea[:offset[0]]
-                # primitive_embedding_ = primitive_embedding[:offset[0]]
-                semantic_ = semantic[:offset[0]].cpu().numpy()
-            else:
-                txyz = coord[offset[bid-1]:offset[bid]].cpu().numpy()
-                spout_ = spout[offset[bid-1]:offset[bid]].detach().cpu().numpy()
-                # init_center = c_idx[sp_offset[bid-1]:sp_offset[bid]].cpu().numpy()
-                pt_center_index = c2p_idx_base[offset[bid-1]:offset[bid]].cpu().numpy()
-                # label_ = label[offset[bid-1]:offset[bid]].cpu().numpy()
-                p_fea_ = p_fea[offset[bid-1]:offset[bid]]
-                # primitive_embedding_ = primitive_embedding[offset[bid-1]:offset[bid]]
-                semantic_ = semantic[offset[bid-1]:offset[bid]].cpu().numpy()
-            pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
-            pred_components = [x[0] for x in pred_components]
-            # partition2ply('./sp_test.ply', txyz, pred_components)
-            # # 超点均值聚类
-            # pred_sp = torch.from_numpy(pred_in_component).to(primitive_embedding_.device)
-            # p2sp_matrix = label2one_hot(pred_sp, pred_sp.max()+1).squeeze()
-            # sp_cnt = torch.sum(p2sp_matrix, dim=1)
-            # sp_fea = torch.matmul(p2sp_matrix, primitive_embedding_) / sp_cnt.unsqueeze(1)
-            # cluster_pred = sp_mean_shift_gpu(sp_fea, bandwidth = 2)
-            # for i in range(cluster_pred.shape[0]):
-            #     pred_in_component[pred_in_component == i] = cluster_pred[i]
-            # coms=np.unique(pred_in_component)
-            # components = []
-            # for i in range(len(coms)):
-            #     te=np.where(pred_in_component==coms[i])
-            #     components.append(te)
-            # partition2ply('./prim_test.ply', txyz, components)
-
-            pred_transition = pred_in_component[tedg_source] != pred_in_component[tedg_target]
-            
-            full_pred = perfect_prediction(pred_components, pred_in_component, semantic_)
-            confusion_matrix.count_predicted_batch(semantic_[:, 1:], full_pred)
-
-            if np.sum(tis_transition) > 0:
-                BR_meter.add((tis_transition.sum()) * compute_boundary_recall(tis_transition, 
-                            relax_edge_binary(pred_transition, tedg_source, 
-                            tedg_target, txyz.shape[0], args['BR_tolerance'])),
-                            n=tis_transition.sum())
-                BP_meter.add((pred_transition.sum()) * compute_boundary_precision(
-                            relax_edge_binary(tis_transition, tedg_source, 
-                            tedg_target, txyz.shape[0], args['BR_tolerance']), 
-                            pred_transition),n=pred_transition.sum())
-
-
-        # for j in range(offset.shape[0]):
-        #     init_center = c_idx[j, :].cpu().numpy()
-        #     filename_ = filename[j]
-        #     if j == 0:
-        #         xyz = coord[:offset[0]].cpu().numpy()
-        #         spout_ = spout[:offset[0]].detach().cpu().numpy()
-        #         pt_center_index = c2p_idx_base[:, :offset[0]].squeeze(0).cpu().numpy()
-        #     else:
-        #         xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
-        #         spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
-        #         pt_center_index = c2p_idx_base[:, offset[j-1]:offset[j]].squeeze(0).cpu().numpy()
-        #     pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
-        #     # time_tag = time.strftime("%Y%m%d-%H%M%S")
-        #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_vis/{}.ply'.format(filename_)
-        #     partition2ply(root_name, xyz, pred_components)
-
-        # for j in range(offset.shape[0]):
-        #     init_center = c_idx.cpu().numpy()
-        #     filename_ = filename[j]
-        #     if j == 0:
-        #         # init_center = c_idx[:sp_offset[0]].cpu().numpy()
-        #         xyz = coord[:offset[0]].cpu().numpy()
-        #         spout_ = spout[:offset[0]].detach().cpu().numpy()
-        #         pt_center_index = c2p_idx_base[:offset[0]].cpu().numpy()
-        #     else:
-        #         # init_center = c_idx[sp_offset[j-1]:sp_offset[j]].cpu().numpy()
-        #         xyz = coord[offset[j-1]:offset[j]].cpu().numpy()
-        #         spout_ = spout[offset[j-1]:offset[j]].detach().cpu().numpy()
-        #         pt_center_index = c2p_idx_base[offset[j-1]:offset[j]].cpu().numpy()
-        #     pred_components, pred_in_component, center = get_components(init_center, pt_center_index, spout_, getmax=True)
-        #     # time_tag = time.strftime("%Y%m%d-%H%M%S")
-        #     root_name = '/data/fz20/project/point-transformer-boundary/visual/sp_v2_only_normconsisloss/{}.ply'.format(filename_)
-        #     partition2ply(root_name, xyz, pred_components)
-
+            loss = type_loss
             
         optimizer.zero_grad()
         # loss.backward()
@@ -647,32 +513,25 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         if args.scheduler_update == 'step':
             scheduler.step()
 
-        # output = output.max(1)[1]
+        output = type_per_point.max(1)[1]
         n = coord.size(0)
-        # if args.multiprocessing_distributed:
-        #     loss *= n
-        #     count = semantic.new_tensor([n], dtype=torch.long)
-        #     dist.all_reduce(loss), dist.all_reduce(count)
-        #     n = count.item()
-        #     loss /= n
-        # intersection, union, target = intersectionAndUnionGPU(output, semantic, args.classes, args.ignore_label)
-        # if args.multiprocessing_distributed:
-        #     dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        # intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+        if args.multiprocessing_distributed:
+            loss *= n
+            count = semantic_gt.new_tensor([n], dtype=torch.long)
+            dist.all_reduce(loss), dist.all_reduce(count)
+            n = count.item()
+            loss /= n
+        intersection, union, target = intersectionAndUnionGPU(output, semantic_gt, args.classes, args.ignore_label)
+        if args.multiprocessing_distributed:
+            dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
+        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
-        # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         
         # # All Reduce loss
         if args.multiprocessing_distributed:
             dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(re_xyz_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(re_label_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(re_sp_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(re_normal_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(normal_consistency_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(re_param_loss.div_(torch.cuda.device_count()))
-            dist.all_reduce(contrastive_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(loss.div_(torch.cuda.device_count()))
         #     dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
         #     dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
@@ -682,15 +541,15 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         # boundary_loss_meter.update(boundary_loss_.item())
         # feat_loss_meter.update(feat_loss.item(), n)
         loss_type_meter.update(type_loss.item(), n)
-        loss_re_xyz_meter.update(re_xyz_loss.item(), n)
-        loss_re_label_meter.update(re_label_loss.item(), n)
-        loss_re_sp_meter.update(re_sp_loss.item(), n)
-        loss_re_norm_meter.update(re_normal_loss.item(), n)
-        loss_norm_consis_meter.update(normal_consistency_loss.item(), n)
-        loss_re_param_meter.update(re_param_loss.item(), n)
-        # loss_param_meter.update(param_loss.item(), n)
-        # loss_sp_contrast_meter.update(sp_center_contrast_loss.item(), n)
-        loss_p2sp_contrast_meter.update(contrastive_loss.item(), n)
+        # loss_re_xyz_meter.update(re_xyz_loss.item(), n)
+        # loss_re_label_meter.update(re_label_loss.item(), n)
+        # loss_re_sp_meter.update(re_sp_loss.item(), n)
+        # loss_re_norm_meter.update(re_normal_loss.item(), n)
+        # loss_norm_consis_meter.update(normal_consistency_loss.item(), n)
+        # loss_re_param_meter.update(re_param_loss.item(), n)
+        # # loss_param_meter.update(param_loss.item(), n)
+        # # loss_sp_contrast_meter.update(sp_center_contrast_loss.item(), n)
+        # loss_p2sp_contrast_meter.update(contrastive_loss.item(), n)
         loss_meter.update(loss.item(), n)
 
         batch_time.update(time.time() - end)
@@ -704,28 +563,6 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
         t_h, t_m = divmod(t_m, 60)
         remain_time = '{:02d}:{:02d}:{:02d}'.format(int(t_h), int(t_m), int(t_s))
 
-        # if (i + 1) % args.print_freq == 0 and main_process():
-        #     lr = scheduler.get_last_lr()
-        #     if isinstance(lr, list):
-        #         lr = [round(x, 8) for x in lr]
-        #     elif isinstance(lr, float):
-        #         lr = round(lr, 8)
-        #     logger.info('Epoch: [{}/{}][{}/{}] '
-        #                 'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
-        #                 'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
-        #                 'Remain {remain_time} '
-        #                 # 'Loss {loss_meter.val:.4f} '
-        #                 'Feat_Loss {feat_loss_meter.val:.4f} '
-        #                 'Type_Loss {type_loss_meter.val:.4f} '
-        #                 'Boundary_Loss {boundary_loss_meter.val:.4f} '
-        #                 'Lr: {lr}.'.format(epoch+1, args.epochs, i + 1, len(train_loader),
-        #                                                   batch_time=batch_time, data_time=data_time,
-        #                                                   remain_time=remain_time,
-        #                                                   feat_loss_meter=feat_loss_meter,
-        #                                                   type_loss_meter=type_loss_meter,
-        #                                                   boundary_loss_meter=boundary_loss_meter,
-        #                                                   lr=lr))
-
         if (i + 1) % args.print_freq == 0 and main_process():
             lr = scheduler.get_last_lr()
             if isinstance(lr, list):
@@ -737,70 +574,40 @@ def train(train_loader, model, criterion, criterion_re_xyz, criterion_re_label, 
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
                         'LS_type {loss_type_meter.val:.4f} '
-                        'LS_re_xyz {loss_re_xyz_meter.val:.4f} '
-                        'LS_re_label {loss_re_label_meter.val:.4f} '
-                        'LS_re_sp {loss_re_sp_meter.val:.4f} '
-                        'LS_re_norm {loss_re_norm_meter.val:.4f} '
-                        'LS_norm_consis {loss_norm_consis_meter.val:.4f} '
-                        'LS_re_param {loss_re_param_meter.val:.4f} '
-                        # 'LS_sp_contrast {loss_sp_contrast_meter.val:.4f} '
-                        'LS_p2sp_contrast {loss_p2sp_contrast_meter.val:.4f} '
-                        # 'LS_feat {feat_loss_meter.val:.4f} '
                         'Loss {loss_meter.val:.4f} '
-                        'lr {lr} '.format(epoch+1, args["epochs"], i + 1, len(train_loader),
+                        'lr {lr} '
+                        'Accuracy {accuracy:.4f}.'.format(epoch+1, args["epochs"], i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
                                                           loss_type_meter=loss_type_meter,
-                                                          loss_re_xyz_meter=loss_re_xyz_meter,
-                                                          loss_re_label_meter=loss_re_label_meter,
-                                                          loss_re_sp_meter=loss_re_sp_meter,
-                                                          loss_re_norm_meter=loss_re_norm_meter,
-                                                          loss_norm_consis_meter=loss_norm_consis_meter,
-                                                          loss_re_param_meter=loss_re_param_meter,
-                                                          loss_p2sp_contrast_meter=loss_p2sp_contrast_meter,
                                                           loss_meter=loss_meter,
-                                                          lr=lr))
+                                                          lr=lr,
+                                                          accuracy=accuracy))
 
         if main_process():
             # writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
             writer.add_scalar('type_loss_train_batch', loss_type_meter.val, current_iter)
-            writer.add_scalar('re_xyz_loss_train_batch', loss_re_xyz_meter.val, current_iter)
-            writer.add_scalar('re_label_loss_train_batch', loss_re_label_meter.val, current_iter)
-            writer.add_scalar('re_sp_loss_train_batch', loss_re_sp_meter.val, current_iter)
-            writer.add_scalar('re_norm_loss_train_batch', loss_re_norm_meter.val, current_iter)
-            writer.add_scalar('norm_consis_loss_train_batch', loss_norm_consis_meter.val, current_iter)
-            writer.add_scalar('re_param_loss_train_batch', loss_re_param_meter.val, current_iter)
-            # writer.add_scalar('param_loss_train_batch', loss_param_meter.val, current_iter)
-            writer.add_scalar('p2sp_contrast_loss_train_batch', loss_p2sp_contrast_meter.val, current_iter)
             writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
-            # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
-            # writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            # writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
+            writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
+            writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
+            writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
 
-            # writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
-            # writer.add_scalar('type_loss_train_batch', type_loss_meter.val, current_iter)
-            # writer.add_scalar('boundary_loss_train_batch', boundary_loss_meter.val, current_iter)
-            # writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
-            # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
-            # writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            # writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
-
-    asa = confusion_matrix.get_overall_accuracy()
-    br = BR_meter.value()[0]
-    bp = BP_meter.value()[0]
-    f1_score = 2 * br * bp / (br + bp + 1e-10)
-    if main_process():
-        logger.info('Train result at epoch [{}/{}]: ASA/BR/BP/F1-score {:.4f}/{:.4f}/{:.4f}/{:.4f}'.format(
-                    epoch+1, args['epochs'], asa, br, bp, f1_score))
-
-    # iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    # accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    # mIoU = np.mean(iou_class)
-    # mAcc = np.mean(accuracy_class)
-    # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    # asa = confusion_matrix.get_overall_accuracy()
+    # br = BR_meter.value()[0]
+    # bp = BP_meter.value()[0]
+    # f1_score = 2 * br * bp / (br + bp + 1e-10)
     # if main_process():
-    #     logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
-    return loss_type_meter.avg, loss_meter.avg, loss_re_xyz_meter.avg, loss_re_label_meter.avg, loss_re_sp_meter.avg, loss_re_norm_meter.avg, loss_norm_consis_meter.avg, loss_re_param_meter.avg, loss_p2sp_contrast_meter.avg, f1_score, asa
+    #     logger.info('Train result at epoch [{}/{}]: ASA/BR/BP/F1-score {:.4f}/{:.4f}/{:.4f}/{:.4f}'.format(
+    #                 epoch+1, args['epochs'], asa, br, bp, f1_score))
+
+    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
+    mIoU = np.mean(iou_class)
+    mAcc = np.mean(accuracy_class)
+    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    if main_process():
+        logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
+    return loss_type_meter.avg, loss_meter.avg, mIoU, mAcc, allAcc
 
     # return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 

@@ -297,7 +297,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             warmup_iters=args.warmup_iters, warmup_ratio=args.warmup_ratio)
     elif args.scheduler == 'MultiStep':
         assert args.scheduler_update == 'epoch'
-        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [300, 600, 900, 1200, 1600]
+        milestones = [int(x) for x in args.milestones.split(",")] if hasattr(args, "milestones") else [2000]
         gamma = args.gamma if hasattr(args, 'gamma') else 0.1
         if main_process():
             logger.info("scheduler: MultiStep. scheduler_update: {}. milestones: {}, gamma: {}".format(args.scheduler_update, milestones, gamma))
@@ -382,10 +382,11 @@ def main_worker(gpu, ngpus_per_node, argss):
                 writer.add_scalar('BP_val', bp, epoch_log)
                 # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
                 # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
-                is_best = f1_score > best_f1_score
-                best_f1_score = max(f1_score, best_f1_score)
-                asa_is_best = asa > best_asa
-                best_asa = max(asa, best_asa)
+                
+        is_best = f1_score > best_f1_score
+        best_f1_score = max(f1_score, best_f1_score)
+        asa_is_best = asa > best_asa
+        best_asa = max(asa, best_asa)
 
         # if (epoch_log % args.save_freq == 0) and main_process():
         #     if not os.path.exists(args.save_path + "/model/"):

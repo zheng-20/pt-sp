@@ -141,9 +141,9 @@ def main():
     logger.info(model)
     model = torch.nn.DataParallel(model.cuda())
     
-    # model_path = os.path.join(args["model_path"], "model", "model_best.pth")
+    model_path = os.path.join(args["model_path"], "model", "model_best.pth")
     # model_path = os.path.join(args["model_path"], "model", "model_best_asa.pth")
-    model_path = os.path.join(args["model_path"], "model", "model_last.pth")
+    # model_path = os.path.join(args["model_path"], "model", "model_last.pth")
     if os.path.isfile(model_path):
         logger.info("=> loading checkpoint '{}'".format(model_path))
         checkpoint = torch.load(model_path)
@@ -548,8 +548,8 @@ def test(test_loader, model, criterion, criterion_re_xyz, criterion_re_label, cr
     logger.info('cnt_room: {} cnt_sp: {} avg_sp: {}'.format(cnt_room, cnt_sp, 1.*cnt_sp/cnt_room))
     logger.info('cnt_sp_act: {} avg_sp_act: {}'.format(cnt_sp_act, 1.*cnt_sp_act/cnt_room))
     logger.info('Test total time: {:.2f}s'.format(test_time))
-    # file_result_txt = open(args.save_folder + '/results' + '.txt',"w")
-    file_result_txt = open(args.save_folder + '/results_asa' + '.txt',"w")
+    file_result_txt = open(args.save_folder + '/results' + '.txt',"w")
+    # file_result_txt = open(args.save_folder + '/results_asa' + '.txt',"w")
     file_result_txt.write("   cnt_room \t cnt_sp \t avg_sp \t cnt_sp_act \t avg_sp_act\n")
     file_result_txt.write("%d \t %d \t %d \t %d \t %d \n" % (cnt_room, cnt_sp, 1.*cnt_sp/cnt_room, cnt_sp_act, 1.*cnt_sp_act/cnt_room) )
     file_result_txt.write("   ASA \t BR \t BP \t F1 \t Test time\n")

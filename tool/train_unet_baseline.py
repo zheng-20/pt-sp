@@ -22,10 +22,10 @@ import torch.optim.lr_scheduler as lr_scheduler
 from tensorboardX import SummaryWriter
 
 from util import config
-from util.abc import ABC_Dataset
+from util.abc_prim import ABC_Dataset
 from util.s3dis import S3DIS
 from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port
-from util.data_util import collate_fn, collate_fn_limit
+from util.data_util_prim import collate_fn, collate_fn_limit
 from util import transform as t
 from util.logger import get_logger
 from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou
@@ -274,6 +274,16 @@ def main_worker(gpu, ngpus_per_node, argss):
         elif args.scheduler_update == 'step':
             iter_per_epoch = len(train_loader)
             scheduler = PolyLR(optimizer, max_iter=args.epochs*iter_per_epoch, power=args.power)
+        else:
+            raise ValueError("No such scheduler update {}".format(args.scheduler_update))
+    elif args.scheduler == 'Cosine':
+        if main_process():
+            logger.info("scheduler: Cosine. scheduler_update: {}".format(args.scheduler_update))
+        if args.scheduler_update == 'epoch':
+            scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        elif args.scheduler_update == 'step':
+            iter_per_epoch = len(train_loader)
+            scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs*iter_per_epoch)
         else:
             raise ValueError("No such scheduler update {}".format(args.scheduler_update))
     else:
