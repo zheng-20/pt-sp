@@ -114,6 +114,22 @@ def data_prepare_abc(coord, normals, boundary, label, semantic, param, F, edges,
     edges = torch.IntTensor(edges)
     return coord, normals, boundary, label, semantic, param, F, edges
 
+def data_prepare_dse_abc(coord, normals, boundary, label, semantic, param, F, edges, dse_edges, split='train', voxel_size=0.04, voxel_max=None, transform=None, shuffle_index=False):
+
+    coord_min = np.min(coord, 0)
+    coord -= coord_min
+    coord = torch.FloatTensor(coord)
+    normals = torch.FloatTensor(normals)
+    boundary = torch.LongTensor(boundary)
+    semantic = torch.LongTensor(semantic)
+    param = torch.FloatTensor(param)
+    label = torch.LongTensor(label)
+    F = torch.LongTensor(F)
+    edges = torch.IntTensor(edges)
+    dse_edges = torch.IntTensor(dse_edges)
+    return coord, normals, boundary, label, semantic, param, F, edges, dse_edges
+
+
 def data_prepare_abc_v2(coord, normals, boundary, label, semantic, param, F, edges, edg_source, edg_target, is_transition, split='train', voxel_size=0.04, voxel_max=None, transform=None, shuffle_index=False):
     # #     if transform:
     #     # coord, feat, label = transform(coord, feat, label)

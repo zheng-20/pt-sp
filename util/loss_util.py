@@ -213,7 +213,7 @@ def mean_shift_gpu(x, offset, bandwidth):
         # print ('Mean shift clustering, might take some time ...')
         tic = time.time()
         labels, centers = ms.fit(pred)
-        print ('[{}/{}] time for Mean shift clustering'.format(i+1, len(offset)), time.time() - tic)
+        # print ('[{}/{}] time for Mean shift clustering'.format(i+1, len(offset)), time.time() - tic)
         if i == 0:
             # IDX[0:offset[i]] = v(labels)
             IDX[0:offset[i]] = labels
@@ -414,3 +414,14 @@ def compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset):
         test_p_iou.append(p_iou)
     
     return np.mean(test_s_iou), np.mean(test_p_iou)
+
+def compute_iou_RG(gt_face_labels, face_labels, semantic_faces, semantic_faces_gt):
+    weights = to_one_hot(face_labels, np.unique(face_labels).shape[0])
+    s_iou, p_iou, _, _ = SIOU_matched_segments(
+		gt_face_labels,
+		face_labels,
+		semantic_faces,
+		semantic_faces_gt,
+		weights,
+	)
+    return s_iou, p_iou

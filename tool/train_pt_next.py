@@ -1,4 +1,6 @@
 import os, sys
+
+import trimesh
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, '../'))
@@ -22,15 +24,18 @@ import torch.optim.lr_scheduler as lr_scheduler
 from tensorboardX import SummaryWriter
 
 from util import config
-from util.abc_prim import ABC_Dataset
+from util.abc_prim import ABC_Dataset, ABC_dse_Dataset
 from util.s3dis import S3DIS
 from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port
-from util.data_util_prim import collate_fn, collate_fn_limit
+from util.data_util_prim import collate_fn, collate_fn_limit, collate_dse_fn, collate_dse_fn_region
 from util import transform as t
 from util.logger import get_logger
-from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou
+from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou, compute_iou_RG
 from functools import partial
 from util.lr import MultiStepWithWarmup, PolyLR
+
+from ctypes import *
+Regiongrow = cdll.LoadLibrary('lib/cpp/build/libregiongrow.so')
 
 
 def get_parser():
@@ -122,15 +127,20 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.pointtransformer.pointtransformer_seg import pointtransformer_Unit_seg_repro as Model
     elif args.arch == 'boundarypointtransformer_Unit_seg_repro':
         from model.pointtransformer.pointtransformer_seg import boundarypointtransformer_Unit_seg_repro as Model
+    elif args.arch == 'boundaryaggregationtransformer_seg_repro':
+        from model.pointtransformer.pointtransformer_seg import boundaryaggregationtransformer_seg_repro as Model
+    elif args.arch == 'pt_next':
+        from model.pointtransformer.pointtransformer import pointtransformer_seg_repro as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
-    boundarymodel = BoundaryModel(c=args.fea_dim, k=args.classes, args=args)
-    model = Model(c=args.fea_dim, k=args.classes, args=args)
+    # boundarymodel = BoundaryModel(c=args.fea_dim, k=args.classes, args=args)
+    model = Model(in_channels=args.fea_dim, num_classes=args.classes)
 
     # if args.sync_bn:
     #    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
+    boundary_criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[int(args.epochs*0.6), int(args.epochs*0.8)], gamma=0.1)
@@ -148,7 +158,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         #     },
         # ]
         # optimizer = torch.optim.AdamW(param_dicts, lr=args.base_lr, weight_decay=args.weight_decay)
-        optimizer = torch.optim.AdamW([{"params": boundarymodel.parameters()}, {"params": model.parameters()}], lr=args.base_lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW([{"params": model.parameters()}], lr=args.base_lr, weight_decay=args.weight_decay)
 
 
     if main_process():
@@ -158,9 +168,9 @@ def main_worker(gpu, ngpus_per_node, argss):
         logger.info(args)
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
-        logger.info(boundarymodel)
+        # logger.info(boundarymodel)
         logger.info(model)
-        logger.info('#Model parameters: {}'.format(sum([x.nelement() for x in boundarymodel.parameters()]) + sum([x.nelement() for x in model.parameters()])))
+        logger.info('#Model parameters: {}'.format(sum([x.nelement() for x in model.parameters()])))
         if args.get("max_grad_norm", None):
             logger.info("args.max_grad_norm = {}".format(args.max_grad_norm))
 
@@ -172,13 +182,13 @@ def main_worker(gpu, ngpus_per_node, argss):
         if args.sync_bn:
             if main_process():
                 logger.info("use SyncBN")
-            boundarymodel = torch.nn.SyncBatchNorm.convert_sync_batchnorm(boundarymodel).cuda()
+            # boundarymodel = torch.nn.SyncBatchNorm.convert_sync_batchnorm(boundarymodel).cuda()
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
-        boundarymodel = torch.nn.parallel.DistributedDataParallel(
-            boundarymodel,
-            device_ids=[gpu],
-            find_unused_parameters=True
-        )
+        # boundarymodel = torch.nn.parallel.DistributedDataParallel(
+        #     boundarymodel,
+        #     device_ids=[gpu],
+        #     find_unused_parameters=True
+        # )
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[gpu],
@@ -186,7 +196,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         )
 
     else:
-        boundarymodel = torch.nn.DataParallel(boundarymodel.cuda())
+        # boundarymodel = torch.nn.DataParallel(boundarymodel.cuda())
         model = torch.nn.DataParallel(model.cuda())
 
     if args.weight:
@@ -194,7 +204,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             if main_process():
                 logger.info("=> loading weight '{}'".format(args.weight))
             checkpoint = torch.load(args.weight)
-            boundarymodel.load_state_dict(checkpoint['boundary_state_dict'])
+            # boundarymodel.load_state_dict(checkpoint['boundary_state_dict'])
             model.load_state_dict(checkpoint['state_dict'])
             if main_process():
                 logger.info("=> loaded weight '{}'".format(args.weight))
@@ -207,7 +217,7 @@ def main_worker(gpu, ngpus_per_node, argss):
                 logger.info("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
             args.start_epoch = checkpoint['epoch']
-            boundarymodel.load_state_dict(checkpoint['boundary_state_dict'], strict=True)
+            # boundarymodel.load_state_dict(checkpoint['boundary_state_dict'], strict=True)
             model.load_state_dict(checkpoint['state_dict'], strict=True)
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler_state_dict = checkpoint['scheduler']
@@ -222,7 +232,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     # train_transform = t.Compose([t.RandomScale([0.9, 1.1]), t.ChromaticAutoContrast(), t.ChromaticTranslation(), t.ChromaticJitter(), t.HueSaturationTranslation()])
     # train_data = S3DIS(split='train', data_root=args.data_root, test_area=args.test_area, voxel_size=args.voxel_size, voxel_max=args.voxel_max, transform=train_transform, shuffle_index=True, loop=args.loop)
     if args.data_name == 'abc':
-        train_data = ABC_Dataset(split='train', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, shuffle_index=True, loop=args.train_loop)
+        train_data = ABC_dse_Dataset(split='train', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, shuffle_index=True, loop=args.train_loop)
     else:
         raise ValueError("The dataset {} is not supported.".format(args.data_name))
 
@@ -232,7 +242,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
     else:
         train_sampler = None
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=collate_fn)
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=collate_dse_fn)
     # train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, \
     #     pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=partial(collate_fn_limit, max_batch_points=args.max_batch_points, logger=logger if main_process() else None))
 
@@ -241,14 +251,14 @@ def main_worker(gpu, ngpus_per_node, argss):
         # val_transform = None
         # val_data = S3DIS(split='val', data_root=args.data_root, test_area=args.test_area, voxel_size=args.voxel_size, voxel_max=800000, transform=val_transform)
         if args.data_name == 'abc':
-            val_data = ABC_Dataset(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000, loop=args.val_loop)
+            val_data = ABC_dse_Dataset(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000, loop=args.val_loop)
         else:
             raise ValueError("The dataset {} is not supported.".format(args.data_name))
         if args.distributed:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
         else:
             val_sampler = None
-        val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
+        val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler, collate_fn=collate_dse_fn_region)
 
     # set scheduler
     if args.scheduler == "MultiStepWithWarmup":
@@ -303,8 +313,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         scaler = None
 
     if args.test_only:
-        s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, boundarymodel, model, criterion)
-        print("s_miou: {}, p_miou: {}".format(s_miou, p_miou))
+        s_miou, p_miou, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion, boundary_criterion)
+        # print("s_miou: {}, p_miou: {}".format(s_miou, p_miou))
         return 0
         
     for epoch in range(args.start_epoch, args.epochs):
@@ -315,12 +325,12 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info("lr: {}".format(scheduler.get_last_lr()))
 
         # loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
-        feat_loss_train, type_loss_train, boundary_loss_train = train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scaler, scheduler)
+        type_loss_train, boundary_loss_train = train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
         if main_process():
-            writer.add_scalar('feat_loss_train', feat_loss_train, epoch_log)
+            # writer.add_scalar('feat_loss_train', feat_loss_train, epoch_log)
             writer.add_scalar('type_loss_train', type_loss_train, epoch_log)
             writer.add_scalar('boundary_loss_train', boundary_loss_train, epoch_log)
             # writer.add_scalar('loss_train', loss_train, epoch_log)
@@ -334,10 +344,10 @@ def main_worker(gpu, ngpus_per_node, argss):
             #     raise NotImplementedError()
             # else:
             #     loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
-            s_miou, p_miou, feat_loss_val, type_loss_val, boundary_loss_val = validate(val_loader, boundarymodel, model, criterion)
+            s_miou, p_miou, type_loss_val, boundary_loss_val = validate(val_loader, model, criterion, boundary_criterion)
 
             if main_process():
-                writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
+                # writer.add_scalar('feat_loss_val', feat_loss_val, epoch_log)
                 writer.add_scalar('type_loss_val', type_loss_val, epoch_log)
                 writer.add_scalar('boundary_loss_val', boundary_loss_val, epoch_log)
                 writer.add_scalar('s_miou', s_miou, epoch_log)
@@ -354,7 +364,7 @@ def main_worker(gpu, ngpus_per_node, argss):
                 os.makedirs(args.save_path + "/model/")
             filename = args.save_path + '/model/model_last.pth'
             logger.info('Saving checkpoint to: ' + filename)
-            torch.save({'epoch': epoch_log, 'boundary_state_dict': boundarymodel.state_dict(), 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
+            torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
             if is_best:
                 logger.info('Best validation mIoU updated to: {:.4f}'.format(best_iou))
@@ -365,7 +375,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
 
 
-def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scaler, scheduler):
+def train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, scaler, scheduler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # loss_meter = AverageMeter()
@@ -376,15 +386,15 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
     type_loss_meter = AverageMeter()
     boundary_loss_meter = AverageMeter()
 
-    boundarymodel.train()
+    # boundarymodel.train()
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
-    for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
+    for i, (coord, normals, boundary, label, semantic, param, offset, edges, dse_edges) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
+        coord, normals, boundary, label, semantic, param, offset, edges, dse_edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True), dse_edges.cuda(non_blocking=True)
 
         # if args.concat_xyz:
         #     feat = torch.cat([normals, coord], 1)
@@ -395,15 +405,15 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
             # softmax = torch.nn.Softmax(dim=1)
             # boundary_pred_ = softmax(boundary_pred)
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
-            primitive_embedding, type_per_point, boundary_pred = model([coord, normals, offset], edges, boundary.int())
+            type_per_point, boundary_pred = model([coord, normals, offset], dse_edges)
             assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
             # loss = criterion(output, target)
-            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             type_loss = criterion(type_per_point, semantic)
-            boundary_loss = criterion(boundary_pred, boundary)
-            loss = feat_loss + type_loss + boundary_loss
+            boundary_loss = boundary_criterion(boundary_pred, boundary)
+            loss = type_loss + boundary_loss
             
         optimizer.zero_grad()
         # loss.backward()
@@ -439,11 +449,12 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
         
         # All Reduce loss
         if args.multiprocessing_distributed:
-            dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
+            # dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
-        feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
-        feat_loss_meter.update(feat_loss_.item())
+        # feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
+        type_loss_, boundary_loss_ = type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
+        # feat_loss_meter.update(feat_loss_.item())
         type_loss_meter.update(type_loss_.item())
         boundary_loss_meter.update(boundary_loss_.item())
         batch_time.update(time.time() - end)
@@ -468,18 +479,18 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
                         # 'Loss {loss_meter.val:.4f} '
-                        'Feat_Loss {feat_loss_meter.val:.4f} '
+                        # 'Feat_Loss {feat_loss_meter.val:.4f} '
                         'Type_Loss {type_loss_meter.val:.4f} '
                         'Boundary_Loss {boundary_loss_meter.val:.4f} '
                         'Lr: {lr}.'.format(epoch+1, args.epochs, i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
-                                                          feat_loss_meter=feat_loss_meter,
+                                                        #   feat_loss_meter=feat_loss_meter,
                                                           type_loss_meter=type_loss_meter,
                                                           boundary_loss_meter=boundary_loss_meter,
                                                           lr=lr))
         if main_process():
-            writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
+            # writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
             writer.add_scalar('type_loss_train_batch', type_loss_meter.val, current_iter)
             writer.add_scalar('boundary_loss_train_batch', boundary_loss_meter.val, current_iter)
             # writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
@@ -496,10 +507,10 @@ def train(train_loader, boundarymodel, model, criterion, optimizer, epoch, scale
     #     logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
     # return loss_meter.avg, mIoU, mAcc, allAcc
 
-    return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
+    return type_loss_meter.avg, boundary_loss_meter.avg
 
 
-def validate(val_loader, boundarymodel, model, criterion):
+def validate(val_loader, model, criterion, boundary_criterion):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     batch_time = AverageMeter()
@@ -516,14 +527,14 @@ def validate(val_loader, boundarymodel, model, criterion):
 
     torch.cuda.empty_cache()
 
-    boundarymodel.eval()
+    # boundarymodel.eval()
     model.eval()
     end = time.time()
-    for i, (coord, normals, boundary, label, semantic, param, offset, edges) in enumerate(val_loader):
+    for i, (coord, normals, boundary, label, semantic, param, offset, edges, dse_edges, face, F_offset) in enumerate(val_loader):
         data_time.update(time.time() - end)
         # coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        coord, normals, boundary, label, semantic, param, offset, edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
-                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True)
+        coord, normals, boundary, label, semantic, param, offset, edges, dse_edges = coord.cuda(non_blocking=True), normals.cuda(non_blocking=True), boundary.cuda(non_blocking=True), \
+                    label.cuda(non_blocking=True), semantic.cuda(non_blocking=True), param.cuda(non_blocking=True), offset.cuda(non_blocking=True), edges.cuda(non_blocking=True), dse_edges.cuda(non_blocking=True)
 
         if semantic.shape[-1] == 1:
             semantic = semantic[:, 0]  # for cls
@@ -537,12 +548,12 @@ def validate(val_loader, boundarymodel, model, criterion):
             # boundary_pred_ = softmax(boundary_pred)
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
 
-            primitive_embedding, type_per_point, boundary_pred = model([coord, normals, offset], edges, boundary.int())
+            type_per_point, boundary_pred = model([coord, normals, offset], dse_edges)
             # loss = criterion(output, target)
-            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             type_loss = criterion(type_per_point, semantic)
-            boundary_loss = criterion(boundary_pred, boundary)
-            loss = feat_loss + type_loss + boundary_loss
+            boundary_loss = boundary_criterion(boundary_pred, boundary)
+            loss = type_loss + boundary_loss
 
         # output = output.max(1)[1]
         # n = coord.size(0)
@@ -561,18 +572,120 @@ def validate(val_loader, boundarymodel, model, criterion):
 
         # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         # loss_meter.update(loss.item(), n)
-            
-        spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
-        s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
+        
+        softmax = torch.nn.Softmax(dim=1)
+        boundary_pred_score = softmax(boundary_pred)
+        test_siou = []
+        test_piou = []
+        for j in range(len(offset)):
+            if j == 0:
+                F = face[0:F_offset[j]]
+                V = coord[0:offset[j]]
+                b_gt = boundary[0:offset[j]]
+                prediction = boundary_pred_score[0:offset[j]]
+                type_pred = type_per_point[0:offset[j]]
+            else:
+                F = face[F_offset[j-1]:F_offset[j]]
+                V = coord[offset[j-1]:offset[j]]
+                b_gt = boundary[offset[j-1]:offset[j]]
+                prediction = boundary_pred_score[offset[j-1]:offset[j]]
+                type_pred = type_per_point[offset[j-1]:offset[j]]
+            F = F.numpy().astype('int32')
+            face_labels = np.zeros((F.shape[0]), dtype='int32')
+            masks = np.zeros((V.shape[0]), dtype='int32')
+            gt_face_labels = np.zeros((F.shape[0]), dtype='int32')
+            gt_masks = np.zeros((V.shape[0]), dtype='int32')
+            output_label = np.zeros((V.shape[0]), dtype='int32')
+            gt_output_label = np.zeros((V.shape[0]), dtype='int32')
+            b_gt = b_gt.data.cpu().numpy().astype('int32')
+            b = (prediction[:,1]>prediction[:,0]).data.cpu().numpy().astype('int32')
+            edg = trimesh.geometry.faces_to_edges(F)
+            pb = np.zeros((edg.shape[0]), dtype='int32')
+            for k in range(V.shape[0]):
+                if b_gt[k] == 1:
+                    pb[edg[:,0]==k] = 1
+                    pb[edg[:,1]==k] = 1
+
+            Regiongrow.RegionGrowing(c_void_p(pb.ctypes.data), c_void_p(F.ctypes.data),
+            V.shape[0], F.shape[0], c_void_p(gt_face_labels.ctypes.data), c_void_p(gt_masks.ctypes.data),
+            c_float(0.99), c_void_p(gt_output_label.ctypes.data))
+
+            pb = np.zeros((edg.shape[0]), dtype='int32')
+            for k in range(V.shape[0]):
+                if b[k] == 1:
+                    pb[edg[:,0]==k] = 1
+                    pb[edg[:,1]==k] = 1
+
+            Regiongrow.RegionGrowing(c_void_p(pb.ctypes.data), c_void_p(F.ctypes.data),
+            V.shape[0], F.shape[0], c_void_p(face_labels.ctypes.data), c_void_p(masks.ctypes.data),
+            c_float(0.99), c_void_p(output_label.ctypes.data))
+
+            pp = np.argmax(type_pred.data.cpu().numpy(), axis=1)
+
+            # colors = np.random.rand(10000, 3)
+            # fp = open('visual/%s.obj'%('prim-pred'), 'w')
+            # for i in range(V.shape[0]):
+            #     v = V[i]
+            #     if output_label[i] < 0:
+            #         p = np.array([0,0,0])
+            #     else:
+            #         p = colors[output_label[i]]
+            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+            # fp.close()
+
+            # fp = open('visual/%s.obj'%('prim-gt'), 'w')
+            # for i in range(V.shape[0]):
+            #     v = V[i]
+            #     if gt_output_label[i] < 0:
+            #         p = np.array([0,0,0])
+            #     else:
+            #         p = colors[gt_output_label[i]]
+            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+            # fp.close()
+
+            # fp = open('visual/%s.obj'%('type-pred'), 'w')
+            # for i in range(V.shape[0]):
+            #     v = V[i]
+            #     if pp[i] < 0:
+            #         p = np.array([0,0,0])
+            #     else:
+            #         p = colors[pp[i]]
+            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+            # fp.close()
+
+            # fp = open('visual/%s.obj'%('type-gt'), 'w')
+            # for i in range(V.shape[0]):
+            #     v = V[i]
+            #     if semantic[i] < 0:
+            #         p = np.array([0,0,0])
+            #     else:
+            #         p = colors[semantic[i]]
+            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+            # fp.close()
+
+            semantic_faces = pp[F[:,0]]
+            semantic_faces_gt = semantic.data.cpu().numpy()[F[:,0]]
+            # semantic_faces = semantic_faces_gt
+
+            s_iou, p_iou = compute_iou_RG(gt_face_labels, face_labels, semantic_faces, semantic_faces_gt)
+            test_siou.append(s_iou)
+            test_piou.append(p_iou)
+        
+        s_iou = np.mean(test_siou)
+        p_iou = np.mean(test_piou)
+
+        # spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
+        # s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
         # All Reduce loss
         if args.multiprocessing_distributed:
-            dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
+            # dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
             # dist.all_reduce(s_iou.div_(torch.cuda.device_count()))
             # dist.all_reduce(p_iou.div_(torch.cuda.device_count()))
-        feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
-        feat_loss_meter.update(feat_loss_.item())
+        # feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
+        type_loss_, boundary_loss_ = type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
+        # feat_loss_meter.update(feat_loss_.item())
         type_loss_meter.update(type_loss_.item())
         boundary_loss_meter.update(boundary_loss_.item())
         s_iou_meter.update(s_iou)
@@ -584,14 +697,14 @@ def validate(val_loader, boundarymodel, model, criterion):
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         # 'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}) '
-                        'Feat_Loss {feat_loss_meter.val:.4f} ({feat_loss_meter.avg:.4f}) '
+                        # 'Feat_Loss {feat_loss_meter.val:.4f} ({feat_loss_meter.avg:.4f}) '
                         'Type_Loss {type_loss_meter.val:.4f} ({type_loss_meter.avg:.4f}) '
                         'Boundary_Loss {boundary_loss_meter.val:.4f} ({boundary_loss_meter.avg:.4f}) '
                         'Seg_IoU {s_iou_meter.val:.4f} ({s_iou_meter.avg:.4f}) '
                         'Type_IoU {type_iou_meter.val:.4f} ({type_iou_meter.avg:.4f}).'.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
-                                                          feat_loss_meter=feat_loss_meter,
+                                                        #   feat_loss_meter=feat_loss_meter,
                                                           type_loss_meter=type_loss_meter,
                                                           boundary_loss_meter=boundary_loss_meter,
                                                           s_iou_meter=s_iou_meter,
@@ -611,7 +724,7 @@ def validate(val_loader, boundarymodel, model, criterion):
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
 
     # return loss_meter.avg, mIoU, mAcc, allAcc
-    return s_iou_meter.avg, type_iou_meter.avg, feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
+    return s_iou_meter.avg, type_iou_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg
 
 
 if __name__ == '__main__':

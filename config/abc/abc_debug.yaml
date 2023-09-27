@@ -66,9 +66,9 @@ TRAIN:
   save_freq: 1
   save_path: runs/abc
   weight:  # path to initial weight (default: none)
-  resume:  # path to latest checkpoint (default: none)
+  resume: exp/abc_prim_boundary_aggre/train_RG/model/model_best.pth # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
-  test_only: False  # evaluate on test set, extra gpu memory needed and small batch_size_val is recommend
+  test_only: True  # evaluate on test set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 1
 Distributed:
   dist_url: tcp://127.0.0.1:6789
