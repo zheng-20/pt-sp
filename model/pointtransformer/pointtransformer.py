@@ -392,7 +392,7 @@ class PTSeg(nn.Module):
         self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True),
                                  nn.Linear(planes[0], 2))
         self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True),
-                                 nn.Linear(planes[0], planes[0]))
+                                 nn.Linear(planes[0], 128))
         self.softmax = nn.Softmax(dim=1)
         
 
@@ -457,14 +457,145 @@ class PTSeg(nn.Module):
         x3_prim = self.dec3_prim[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4_prim, o4]), o3])[1]
         x2_prim = self.dec2_prim[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3_prim, o3]), o2])[1]
         x1_prim = self.dec1_prim[1]([p1, self.dec1[0]([p1, x1, o1], [p2, x2_prim, o2]), o1], edges, boundary_pred)[1]
-        # embedtype_fea = self.decoder_embedandtype(x1_prim)
-        # embedtype_fea += 0.2*boundary_fea
+        embedtype_fea = self.decoder_embedandtype(x1_prim)
+        embedtype_fea += 0.2*boundary_fea
         type_per_point = self.cls(x1_prim)
-        # primitive_embedding = self.embedding(embedtype_fea)
+        primitive_embedding = self.embedding(embedtype_fea)
 
-        # return primitive_embedding, type_per_point, boundary
-        return type_per_point, boundary
+        return primitive_embedding, type_per_point, boundary
+        # return type_per_point, boundary
 
 def pointtransformer_seg_repro(**kwargs):
     model = PTSeg(PointTransformerBlock, [2, 3, 4, 6, 3], **kwargs)
+    return model
+
+
+class PTSeg128(nn.Module):
+    def __init__(self,
+                 block,
+                 blocks,    # depth
+                 width=128,
+                 nsample=[16, 16, 16],
+                 in_channels=6,
+                 num_classes=10,
+                 dec_local_aggr=True,
+                 mid_res=False
+                 ):
+        super().__init__()
+        self.c = in_channels
+        self.in_planes, planes = in_channels, [width * 2**i for i in range(len(blocks))]
+        fpn_planes, fpnhead_planes, share_planes = 128, 64, 8
+        stride, nsample = [1, 4, 4], nsample
+
+        if isinstance(block, str):
+            block = eval(block)
+        self.mid_res = mid_res
+        self.dec_local_aggr = dec_local_aggr
+        self.enc1 = self._make_enc(block, planes[0], blocks[0], share_planes, stride=stride[0],
+                                   nsample=nsample[0])  # N/1
+        self.enc2 = self._make_enc(block, planes[1], blocks[1], share_planes, stride=stride[1],
+                                   nsample=nsample[1])  # N/4
+        self.enc3 = self._make_enc(block, planes[2], blocks[2], share_planes, stride=stride[2],
+                                   nsample=nsample[2])  # N/16
+        # self.enc4 = self._make_enc(block, planes[3], blocks[3], share_planes, stride=stride[3],
+        #                            nsample=nsample[3])  # N/64
+        # self.enc5 = self._make_enc(block, planes[4], blocks[4], share_planes, stride=stride[4],
+        #                            nsample=nsample[4])  # N/256
+
+        # self.dec5 = self._make_dec(block, planes[4], 2, share_planes, nsample[4], True)  # transform p5
+        # self.dec4 = self._make_dec(block, planes[3], 2, share_planes, nsample[3])  # fusion p5 and p4
+        self.dec3 = self._make_dec(block, planes[2], 2, share_planes, nsample[2], True)  # fusion p4 and p3
+        self.dec2 = self._make_dec(block, planes[1], 2, share_planes, nsample[1])  # fusion p3 and p2
+        self.dec1 = self._make_dec(block, planes[0], 2, share_planes, nsample[0])  # fusion p2 and p1
+
+        # self.dec5_prim = self._make_dec_with_boundary(block, planes[4], 2, share_planes, nsample[4], True)  # transform p5
+        # self.dec4_prim = self._make_dec_with_boundary(block, planes[3], 2, share_planes, nsample[3])  # fusion p5 and p4
+        self.dec3_prim = self._make_dec_with_boundary(block, planes[2], 2, share_planes, nsample[2], True)  # fusion p4 and p3
+        self.dec2_prim = self._make_dec_with_boundary(block, planes[1], 2, share_planes, nsample[1])  # fusion p3 and p2
+        self.dec1_prim = self._make_dec_with_boundary(block, planes[0], 2, share_planes, nsample[0])  # fusion p2 and p1
+
+
+        self.decoder_embedandtype = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+        self.decoder_boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True), nn.Linear(planes[0], planes[0]))
+
+        self.cls = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True),
+                                 nn.Linear(planes[0], num_classes))
+        self.boundary = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True),
+                                 nn.Linear(planes[0], 2))
+        self.embedding = nn.Sequential(nn.Linear(planes[0], planes[0]), nn.BatchNorm1d(planes[0]), nn.ReLU(inplace=True),
+                                 nn.Linear(planes[0], 128))
+        self.softmax = nn.Softmax(dim=1)
+        
+
+    def _make_enc(self, block, planes, blocks, share_planes=8, stride=1, nsample=16):
+        layers = []
+        layers.append(TransitionDown(self.in_planes, planes * block.expansion, stride, nsample))
+        self.in_planes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample, mid_res=self.mid_res))
+        return nn.Sequential(*layers)
+
+    def _make_dec(self, block, planes, blocks, share_planes=8, nsample=16, is_head=False):
+        layers = []
+        layers.append(TransitionUp(self.in_planes, None if is_head else planes * block.expansion))
+        self.in_planes = planes * block.expansion
+
+        if self.dec_local_aggr:
+            for _ in range(1, blocks):
+                layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample, mid_res=self.mid_res))
+        return nn.Sequential(*layers)
+    
+    def _make_dec_with_boundary(self, block, planes, blocks, share_planes=8, nsample=16, is_head=False):
+        layers = []
+        layers.append(TransitionUp(self.in_planes, None if is_head else planes * block.expansion))
+        self.in_planes = planes * block.expansion
+        if planes == 128:
+            block = BoundaryTransformerBlock
+
+        if self.dec_local_aggr:
+            for _ in range(1, blocks):
+                layers.append(block(self.in_planes, self.in_planes, share_planes, nsample=nsample, mid_res=self.mid_res))
+        return nn.Sequential(*layers)
+
+    def forward(self, pxo, edges=None):
+        # p, x, o: points, features, batches
+        # if o0 is None:  # this means p0 is a dict.
+        #     p0, x0, o0 = p0['pos'], p0.get('x', None), p0['o']
+        # if x0 is None:
+        #     x0 = p0
+        p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
+        x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
+        p1, x1, o1 = self.enc1([p0, x0, o0])
+        p2, x2, o2 = self.enc2([p1, x1, o1])
+        p3, x3, o3 = self.enc3([p2, x2, o2])
+        # p4, x4, o4 = self.enc4([p3, x3, o3])
+        # p5, x5, o5 = self.enc5([p4, x4, o4])
+
+        # boundary decoder
+        # x5_b = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
+        # x4_b = self.dec4[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5_b, o5]), o4])[1]
+        x3_b = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3]), o3])[1]
+        x2_b = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3_b, o3]), o2])[1]
+        x1_b = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2_b, o2]), o1])[1]
+        boundary_fea = self.decoder_boundary(x1_b)
+        boundary = self.boundary(boundary_fea)
+        boundary_pred = self.softmax(boundary).clone()
+        boundary_pred = (boundary_pred[:, 1] > 0.5).int()
+
+        # primitive decoder
+        # x5_prim = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
+        # x4_prim = self.dec4_prim[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5_prim, o5]), o4])[1]
+        x3_prim = self.dec3_prim[1:]([p3, self.dec3[0]([p3, x3, o3]), o3])[1]
+        x2_prim = self.dec2_prim[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3_prim, o3]), o2])[1]
+        x1_prim = self.dec1_prim[1]([p1, self.dec1[0]([p1, x1, o1], [p2, x2_prim, o2]), o1], edges, boundary_pred)[1]
+        embedtype_fea = self.decoder_embedandtype(x1_prim)
+        embedtype_fea += 0.2*boundary_fea
+        type_per_point = self.cls(x1_prim)
+        primitive_embedding = self.embedding(embedtype_fea)
+
+        return primitive_embedding, type_per_point, boundary
+        # return type_per_point, boundary
+
+def pointtransformer_seg_repro128(**kwargs):
+    model = PTSeg128(PointTransformerBlock, [1, 1, 1], **kwargs)
     return model

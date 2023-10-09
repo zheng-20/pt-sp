@@ -1,13 +1,13 @@
 DATA:
   data_name: abc
-  data_root: /public/fz20/dataset/dse_abc # Fill in the pre-processed data path (which contains the .npy files)
+  data_root: /data1/fz20/dataset/dse_abc # Fill in the pre-processed data path (which contains the .npy files)
   test_area: 5
   classes: 10
   fea_dim: 6
   voxel_size: 0.005
   voxel_max: 80000
   train_loop: 4
-  val_loop: 0.2
+  val_loop: 0.02
 
 TRAIN:
   #arch
@@ -34,7 +34,7 @@ TRAIN:
   max_num_neighbors: 34 # For KPConv
   ratio: 0.25
   k: 16
-  bandwidth: 1.31
+  bandwidth: 1.61
 
   # training
   aug: True
@@ -49,9 +49,9 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [1,2,3,4]
-  workers: 8  # data loader workers
-  batch_size: 32  # batch size for training
+  train_gpu: [3]
+  workers: 4  # data loader workers
+  batch_size: 8  # batch size for training
   batch_size_val: 4  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
   epochs: 200
@@ -66,7 +66,7 @@ TRAIN:
   save_freq: 1
   save_path: runs/abc
   weight:  # path to initial weight (default: none)
-  resume: exp/abc_prim_boundary_aggre/train_RG/model/model_best.pth # path to latest checkpoint (default: none)
+  resume: exp/abc_prim_boundary_aggre/train_128/model/model_last.pth # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   test_only: True  # evaluate on test set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 1

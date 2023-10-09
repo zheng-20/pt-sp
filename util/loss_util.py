@@ -7,6 +7,60 @@ import math
 from torch.autograd import Variable
 from lapsolver import solve_dense
 from sklearn.cluster import MeanShift
+from lib.pointops.functions import pointops
+from sklearn.metrics.pairwise import euclidean_distances
+
+def binarys(points, dep):
+    coord_min, coord_max = torch.amin(points, axis=0)[:3], torch.amax(points, axis=0)[:3]
+    if dep == 0:
+        ax = 1
+    else:
+        ax = 0
+    left, right = coord_min[ax], coord_max[ax]
+    half_n = int(points.shape[0] / 2.0)
+    pidx1, pidx2 = None, None
+    while (left + 1e-8 < right):
+        mid = (left + right) / 2.0 
+        tmp1 = torch.where((points[:, ax] <= mid))[0]
+        if tmp1.size()[0] <= int(half_n*1.1) and tmp1.size()[0] >= int(half_n*0.9):
+            tmp2 = torch.where((points[:, ax] > mid))[0]
+            pidx1 = tmp1
+            pidx2 = tmp2
+            break
+        elif tmp1.size()[0] < int(half_n*0.9):
+            left = mid
+        else:
+            right = mid
+    assert (points.shape[0] == pidx1.size()[0] + pidx2.size()[0])
+    return pidx1, pidx2
+
+def dfs(points, points_index, th, dep):
+    ret = []
+    if points.shape[0] <= th:
+        ret.append(points_index)
+        return ret
+
+    t1, t2 = binarys(points, dep)
+    p1, p2 = points[t1, :], points[t2, :]
+    i1, i2 = points_index[t1], points_index[t2]
+    r1 = dfs(p1, i1, th, dep+1)
+    for val in r1:
+        ret.append(val)
+    r2 = dfs(p2, i2, th, dep+1)
+    for val in r2:
+        ret.append(val)
+    return ret
+
+def split_data(points, th=7000):
+    # coord_min, coord_max = np.amin(points, axis=0)[:3], np.amax(points, axis=0)[:3]
+    
+    points_idx = torch.arange(points.shape[0])
+    pidx_list = dfs(points, points_idx, th, 0)
+    pts, indexs = [], []
+    for val in pidx_list:
+        pts.append(points[val, :])
+        indexs.append(val)
+    return pts, indexs
 
 def npy(var):
     return var.data.cpu().numpy()
@@ -203,7 +257,7 @@ def mean_shift_gpu(x, offset, bandwidth):
     N, c = x.shape
     # IDX = torch.zeros(N).to(x.device).long()
     IDX = np.zeros(N, dtype=np.int)
-    ms = MeanShift_GPU(bandwidth=bandwidth, batch_size=1000)
+    ms = MeanShift_GPU(bandwidth=bandwidth, batch_size=700)
     for i in range(len(offset)):
         if i == 0:
             pred = x[0:offset[i]]
@@ -220,6 +274,88 @@ def mean_shift_gpu(x, offset, bandwidth):
         else:
             # IDX[offset[i-1]:offset[i]] = v(labels)
             IDX[offset[i-1]:offset[i]] = labels
+        # IDX[i] = v(labels)
+        # cluster_centers = centers
+
+        # num_clusters = cluster_centers.shape[0]
+        # print(num_clusters)
+    return IDX
+
+def block_mean_shift_gpu(coord, x, offset, bandwidth):
+    # x: [N, f]
+    N, c = x.shape
+    # IDX = torch.zeros(N).to(x.device).long()
+    IDX = np.zeros(N, dtype=np.int)
+    ms = MeanShift_GPU(bandwidth=bandwidth, batch_size=1000)
+    for i in range(len(offset)):
+        if i == 0:
+            pred = x[0:offset[i]]
+            coord_i = coord[0:offset[i]]
+        else:
+            pred = x[offset[i-1]:offset[i]]
+            coord_i = coord[offset[i-1]:offset[i]]
+
+        # print ('Mean shift clustering, might take some time ...')
+        # tic = time.time()
+        # global_labels, global_centers = ms.fit(pred)
+        # print ('[{}/{}] time for Mean shift clustering'.format(i+1, len(offset)), time.time() - tic)
+        tic = time.time()
+        xs, indexs = split_data(coord_i, th=7000)   # 点云分块
+        labels = []
+        centers = []
+        for indexs_i in indexs:
+            labels_i, centers_i = ms.fit(pred[indexs_i])
+            labels.append(labels_i)
+            centers.append(centers_i)
+        # # 可视化部分点云
+        # primitive_colors = np.random.rand(10000, 3)
+        # fp = open('visual/0_0.obj', 'w')
+        # for j in range(coord_i[indexs[0]].shape[0]):
+        #     v = coord_i[indexs[0]][j]
+        #     if labels[0][j] < 0:
+        #         p = np.array([0,0,0])
+        #     else:
+        #         p = primitive_colors[labels[0][j]]
+        #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+        # fp.close()
+        combined_labels = np.zeros(pred.shape[0], dtype=np.int) # 合并聚类结果
+        n_blocks = len(xs)
+        block_labels = []   # 每个块的原始聚类标签，用于合并聚类查找标签号
+        threshold = 0.7   # 聚类合并阈值
+        for j in range(n_blocks):
+            block_labels.append(np.arange(labels[j].min(), labels[j].max() + 1))
+            if j == n_blocks - 1:
+                break
+            labels[j+1] += labels[j].max() + 1
+        for j in range(n_blocks):
+            for k in range(j+1, n_blocks):
+                distances = euclidean_distances(centers[j], centers[k])
+                for l in range(len(distances)):
+                    if True in (distances[l] < threshold):
+                        same = np.where(distances[l] < threshold)
+                        for s in same[0]:
+                            labels[k][labels[k] == block_labels[k][s]] = block_labels[j][l]
+                            block_labels[k][s] = block_labels[j][l]
+        for j in range(len(indexs)):
+            combined_labels[indexs[j]] = labels[j]
+        # # 可视化合并聚类点云
+        # primitive_colors = np.random.rand(10000, 3)
+        # fp = open('visual/0.obj', 'w')
+        # for j in range(coord_i.shape[0]):
+        #     v = coord_i[j]
+        #     if combined_labels[j] < 0:
+        #         p = np.array([0,0,0])
+        #     else:
+        #         p = primitive_colors[combined_labels[j]]
+        #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+        # fp.close()
+        print ('[{}/{}] time for Blocked Mean shift clustering'.format(i+1, len(offset)), time.time() - tic)
+        if i == 0:
+            # IDX[0:offset[i]] = v(labels)
+            IDX[0:offset[i]] = combined_labels
+        else:
+            # IDX[offset[i-1]:offset[i]] = v(labels)
+            IDX[offset[i-1]:offset[i]] = combined_labels
         # IDX[i] = v(labels)
         # cluster_centers = centers
 
@@ -425,3 +561,98 @@ def compute_iou_RG(gt_face_labels, face_labels, semantic_faces, semantic_faces_g
 		weights,
 	)
     return s_iou, p_iou
+
+def compute_boundary_loss_for_type(p, features, target, offset):
+
+    total_loss = torch.Tensor([0.0]).to(features.device)
+    cnt = 0
+
+    for i in range(len(offset)):
+        if i == 0:
+            pred = features[0:offset[i]]
+            gt = target[0:offset[i]]
+            p_i = p[0:offset[i]]
+        else:
+            pred = features[offset[i-1]:offset[i]]
+            gt = target[offset[i-1]:offset[i]]
+            p_i = p[offset[i-1]:offset[i]]
+        
+        valid_class = (gt != -1)  # remove background
+        gt = gt[valid_class]
+        pred = pred[valid_class]
+        p_i = p_i[valid_class]
+
+        labels = F.one_hot(gt, gt.max()+1).float()
+
+        nsample = 8
+        # p_i = torch.unsqueeze(p_i, dim=0)
+        offset_i = torch.tensor(p_i.shape[0]).to(features.device).int()
+        neighbor_idx_i = pointops.knnquery(nsample, p_i, p_i, offset_i, offset_i)
+        nsample -= 1
+
+        neighbor_idx_i = neighbor_idx_i[0][..., 1:].contiguous()  # [m, nsample-1]
+        m = neighbor_idx_i.shape[0]
+
+        neighbor_label = labels[neighbor_idx_i.view(-1).long(), :].view(m, nsample, labels.shape[1]) # (m, nsample, ncls)
+        neighbor_feature = pred[neighbor_idx_i.view(-1).long(), :].view(m, nsample, pred.shape[1])
+
+        labels = torch.argmax(torch.unsqueeze(labels, -2), -1)  # [m, 1]
+        neighbor_label = torch.argmax(neighbor_label, -1)  # [m, nsample]
+        posmask = labels == neighbor_label  # [m, nsample]
+
+        point_mask = torch.sum(posmask.int(), -1)  # (m)
+        point_mask = torch.logical_and(0 < point_mask, point_mask < nsample)    # 边界点mask
+
+        if not torch.any(point_mask):
+            loss = .0
+            total_loss += loss
+            cnt += 1
+            continue
+
+        posmask = posmask[point_mask]
+        pred = pred[point_mask]    # 边界点的特征
+        neighbor_feature = neighbor_feature[point_mask]
+
+        # dist_l2
+        dist = torch.unsqueeze(pred, -2) - neighbor_feature
+        dist = torch.sqrt(torch.sum(dist ** 2, axis=-1) + 1e-12)
+
+        # # dist_kl
+        # pred = F.log_softmax(pred, dim=-1)
+        # pred = pred.unsqueeze(-2)
+        # pred = pred.expand([neighbor_feature.shape[0], nsample, 128])
+        # neighbor_feature = F.log_softmax(neighbor_feature, dim=-1)
+        # dist = F.kl_div(neighbor_feature, pred, reduction='none', log_target=True)
+        # dist = F.softmax(neighbor_feature, dim=-1) * (F.log_softmax(neighbor_feature, dim=-1) - F.log_softmax(pred, dim=-1))
+        # dist = dist.sum(-1) # 边界点与邻域点的kl散度度量
+
+        # compute loss
+        dist = -dist
+        dist = dist - torch.max(dist, -1, keepdim=True)[0]  # NOTE: max return both (max value, index)
+
+        dist = dist / 1
+        exp = torch.exp(dist)
+        # if invalid_mask is not None:
+        #     valid_mask = 1 - invalid_mask
+        #     exp = exp * valid_mask
+
+        # softnn
+        pos = torch.sum(exp * posmask, axis=-1)  # (m)
+        neg = torch.sum(exp, axis=-1)  # (m)
+        loss = -torch.log(pos / neg + 1e-12)
+
+        # # nce
+        # neg = torch.sum(exp * (~posmask), axis=-1)  # (m)
+        # pos = torch.sum(exp * posmask, axis=-1)  # (m)
+        # exp = torch.sum(exp, axis=-1)  # (m)
+        # loss = (pos / (exp + neg) + 1e-12)
+        # loss = -torch.log(loss)
+
+        loss = torch.mean(loss)
+
+        total_loss += loss
+        cnt += 1
+    
+    total_loss = total_loss / cnt
+
+    return total_loss

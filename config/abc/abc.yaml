@@ -1,6 +1,6 @@
 DATA:
   data_name: abc
-  data_root: /public/fz20/dataset/dse_abc # Fill in the pre-processed data path (which contains the .npy files)
+  data_root: /data1/fz20/dataset/dse_abc # Fill in the pre-processed data path (which contains the .npy files)
   test_area: 5
   classes: 10
   fea_dim: 6
@@ -11,7 +11,7 @@ DATA:
 
 TRAIN:
   #arch
-  arch: pt_next
+  arch: pt_next128
   stem_transformer: True
   use_xyz: True
   sync_bn: True  # adopt sync_bn or not
@@ -49,9 +49,9 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [1,2,3,4]
+  train_gpu: [3]
   workers: 8  # data loader workers
-  batch_size: 32  # batch size for training
+  batch_size: 18  # batch size for training
   batch_size_val: 4  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.001
   epochs: 200

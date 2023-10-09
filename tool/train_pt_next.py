@@ -30,7 +30,7 @@ from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_po
 from util.data_util_prim import collate_fn, collate_fn_limit, collate_dse_fn, collate_dse_fn_region
 from util import transform as t
 from util.logger import get_logger
-from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou, compute_iou_RG
+from util.loss_util import compute_embedding_loss, mean_shift_gpu, compute_iou, compute_iou_RG, compute_boundary_loss_for_type, block_mean_shift_gpu
 from functools import partial
 from util.lr import MultiStepWithWarmup, PolyLR
 
@@ -131,6 +131,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         from model.pointtransformer.pointtransformer_seg import boundaryaggregationtransformer_seg_repro as Model
     elif args.arch == 'pt_next':
         from model.pointtransformer.pointtransformer import pointtransformer_seg_repro as Model
+    elif args.arch == 'pt_next128':
+        from model.pointtransformer.pointtransformer import pointtransformer_seg_repro128 as Model
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     # model = Model(c=args.fea_dim, k=args.classes)
@@ -325,14 +327,15 @@ def main_worker(gpu, ngpus_per_node, argss):
             logger.info("lr: {}".format(scheduler.get_last_lr()))
 
         # loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
-        type_loss_train, boundary_loss_train = train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, scaler, scheduler)
+        feat_loss_train, type_loss_train, boundary_loss_train, contrast_loss_train = train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
         if main_process():
-            # writer.add_scalar('feat_loss_train', feat_loss_train, epoch_log)
+            writer.add_scalar('feat_loss_train', feat_loss_train, epoch_log)
             writer.add_scalar('type_loss_train', type_loss_train, epoch_log)
             writer.add_scalar('boundary_loss_train', boundary_loss_train, epoch_log)
+            writer.add_scalar('contrast_loss_train', contrast_loss_train, epoch_log)
             # writer.add_scalar('loss_train', loss_train, epoch_log)
             # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
             # writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
@@ -385,6 +388,7 @@ def train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, 
     feat_loss_meter = AverageMeter()
     type_loss_meter = AverageMeter()
     boundary_loss_meter = AverageMeter()
+    contrast_loss_meter = AverageMeter()
 
     # boundarymodel.train()
     model.train()
@@ -405,15 +409,16 @@ def train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, 
             # softmax = torch.nn.Softmax(dim=1)
             # boundary_pred_ = softmax(boundary_pred)
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
-            type_per_point, boundary_pred = model([coord, normals, offset], dse_edges)
+            primitive_embedding, type_per_point, boundary_pred = model([coord, normals, offset], dse_edges)
             assert type_per_point.shape[1] == args.classes
             if semantic.shape[-1] == 1:
                 semantic = semantic[:, 0]  # for cls
             # loss = criterion(output, target)
-            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             type_loss = criterion(type_per_point, semantic)
             boundary_loss = boundary_criterion(boundary_pred, boundary)
-            loss = type_loss + boundary_loss
+            contrast_loss = compute_boundary_loss_for_type(coord, type_per_point, semantic, offset)
+            loss = feat_loss + type_loss + boundary_loss + contrast_loss
             
         optimizer.zero_grad()
         # loss.backward()
@@ -449,14 +454,16 @@ def train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, 
         
         # All Reduce loss
         if args.multiprocessing_distributed:
-            # dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
+            dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(type_loss.div_(torch.cuda.device_count()))
             dist.all_reduce(boundary_loss.div_(torch.cuda.device_count()))
-        # feat_loss_, type_loss_, boundary_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
-        type_loss_, boundary_loss_ = type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy()
-        # feat_loss_meter.update(feat_loss_.item())
+            dist.all_reduce(contrast_loss.div_(torch.cuda.device_count()))
+        feat_loss_, type_loss_, boundary_loss_, contrast_loss_ = feat_loss.data.cpu().numpy(), type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy(), contrast_loss.data.cpu().numpy()
+        # type_loss_, boundary_loss_, contrast_loss_ = type_loss.data.cpu().numpy(), boundary_loss.data.cpu().numpy(), contrast_loss.data.cpu().numpy()
+        feat_loss_meter.update(feat_loss_.item())
         type_loss_meter.update(type_loss_.item())
         boundary_loss_meter.update(boundary_loss_.item())
+        contrast_loss_meter.update(contrast_loss_.item())
         batch_time.update(time.time() - end)
         end = time.time()
 
@@ -479,20 +486,23 @@ def train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, 
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
                         # 'Loss {loss_meter.val:.4f} '
-                        # 'Feat_Loss {feat_loss_meter.val:.4f} '
+                        'Feat_Loss {feat_loss_meter.val:.4f} '
                         'Type_Loss {type_loss_meter.val:.4f} '
                         'Boundary_Loss {boundary_loss_meter.val:.4f} '
+                        'Contrast_Loss {contrast_loss_meter.val:.4f} '
                         'Lr: {lr}.'.format(epoch+1, args.epochs, i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
-                                                        #   feat_loss_meter=feat_loss_meter,
+                                                          feat_loss_meter=feat_loss_meter,
                                                           type_loss_meter=type_loss_meter,
                                                           boundary_loss_meter=boundary_loss_meter,
+                                                          contrast_loss_meter=contrast_loss_meter,
                                                           lr=lr))
         if main_process():
-            # writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
+            writer.add_scalar('feat_loss_train_batch', feat_loss_meter.val, current_iter)
             writer.add_scalar('type_loss_train_batch', type_loss_meter.val, current_iter)
             writer.add_scalar('boundary_loss_train_batch', boundary_loss_meter.val, current_iter)
+            writer.add_scalar('contrast_loss_train_batch', contrast_loss_meter.val, current_iter)
             # writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
             # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
             # writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
@@ -507,7 +517,7 @@ def train(train_loader, model, criterion, boundary_criterion, optimizer, epoch, 
     #     logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
     # return loss_meter.avg, mIoU, mAcc, allAcc
 
-    return type_loss_meter.avg, boundary_loss_meter.avg
+    return feat_loss_meter.avg, type_loss_meter.avg, boundary_loss_meter.avg, contrast_loss_meter.avg
 
 
 def validate(val_loader, model, criterion, boundary_criterion):
@@ -522,6 +532,7 @@ def validate(val_loader, model, criterion, boundary_criterion):
     feat_loss_meter = AverageMeter()
     type_loss_meter = AverageMeter()
     boundary_loss_meter = AverageMeter()
+    contrast_loss_meter = AverageMeter()
     s_iou_meter = AverageMeter()
     type_iou_meter = AverageMeter()
 
@@ -548,12 +559,13 @@ def validate(val_loader, model, criterion, boundary_criterion):
             # boundary_pred_ = softmax(boundary_pred)
             # boundary_pred_ = (boundary_pred_[:,1] > 0.5).int()
 
-            type_per_point, boundary_pred = model([coord, normals, offset], dse_edges)
+            primitive_embedding, type_per_point, boundary_pred = model([coord, normals, offset], dse_edges)
             # loss = criterion(output, target)
-            # feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
+            feat_loss, pull_loss, push_loss = compute_embedding_loss(primitive_embedding, label, offset)
             type_loss = criterion(type_per_point, semantic)
             boundary_loss = boundary_criterion(boundary_pred, boundary)
-            loss = type_loss + boundary_loss
+            contrast_loss = compute_boundary_loss_for_type(coord, type_per_point, semantic, offset)
+            loss = feat_loss + type_loss + boundary_loss + contrast_loss
 
         # output = output.max(1)[1]
         # n = coord.size(0)
@@ -573,109 +585,110 @@ def validate(val_loader, model, criterion, boundary_criterion):
         # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         # loss_meter.update(loss.item(), n)
         
-        softmax = torch.nn.Softmax(dim=1)
-        boundary_pred_score = softmax(boundary_pred)
-        test_siou = []
-        test_piou = []
-        for j in range(len(offset)):
-            if j == 0:
-                F = face[0:F_offset[j]]
-                V = coord[0:offset[j]]
-                b_gt = boundary[0:offset[j]]
-                prediction = boundary_pred_score[0:offset[j]]
-                type_pred = type_per_point[0:offset[j]]
-            else:
-                F = face[F_offset[j-1]:F_offset[j]]
-                V = coord[offset[j-1]:offset[j]]
-                b_gt = boundary[offset[j-1]:offset[j]]
-                prediction = boundary_pred_score[offset[j-1]:offset[j]]
-                type_pred = type_per_point[offset[j-1]:offset[j]]
-            F = F.numpy().astype('int32')
-            face_labels = np.zeros((F.shape[0]), dtype='int32')
-            masks = np.zeros((V.shape[0]), dtype='int32')
-            gt_face_labels = np.zeros((F.shape[0]), dtype='int32')
-            gt_masks = np.zeros((V.shape[0]), dtype='int32')
-            output_label = np.zeros((V.shape[0]), dtype='int32')
-            gt_output_label = np.zeros((V.shape[0]), dtype='int32')
-            b_gt = b_gt.data.cpu().numpy().astype('int32')
-            b = (prediction[:,1]>prediction[:,0]).data.cpu().numpy().astype('int32')
-            edg = trimesh.geometry.faces_to_edges(F)
-            pb = np.zeros((edg.shape[0]), dtype='int32')
-            for k in range(V.shape[0]):
-                if b_gt[k] == 1:
-                    pb[edg[:,0]==k] = 1
-                    pb[edg[:,1]==k] = 1
+        # softmax = torch.nn.Softmax(dim=1)
+        # boundary_pred_score = softmax(boundary_pred)
+        # test_siou = []
+        # test_piou = []
+        # for j in range(len(offset)):
+        #     if j == 0:
+        #         F = face[0:F_offset[j]]
+        #         V = coord[0:offset[j]]
+        #         b_gt = boundary[0:offset[j]]
+        #         prediction = boundary_pred_score[0:offset[j]]
+        #         type_pred = type_per_point[0:offset[j]]
+        #     else:
+        #         F = face[F_offset[j-1]:F_offset[j]]
+        #         V = coord[offset[j-1]:offset[j]]
+        #         b_gt = boundary[offset[j-1]:offset[j]]
+        #         prediction = boundary_pred_score[offset[j-1]:offset[j]]
+        #         type_pred = type_per_point[offset[j-1]:offset[j]]
+        #     F = F.numpy().astype('int32')
+        #     face_labels = np.zeros((F.shape[0]), dtype='int32')
+        #     masks = np.zeros((V.shape[0]), dtype='int32')
+        #     gt_face_labels = np.zeros((F.shape[0]), dtype='int32')
+        #     gt_masks = np.zeros((V.shape[0]), dtype='int32')
+        #     output_label = np.zeros((V.shape[0]), dtype='int32')
+        #     gt_output_label = np.zeros((V.shape[0]), dtype='int32')
+        #     b_gt = b_gt.data.cpu().numpy().astype('int32')
+        #     b = (prediction[:,1]>prediction[:,0]).data.cpu().numpy().astype('int32')
+        #     edg = trimesh.geometry.faces_to_edges(F)
+        #     pb = np.zeros((edg.shape[0]), dtype='int32')
+        #     for k in range(V.shape[0]):
+        #         if b_gt[k] == 1:
+        #             pb[edg[:,0]==k] = 1
+        #             pb[edg[:,1]==k] = 1
 
-            Regiongrow.RegionGrowing(c_void_p(pb.ctypes.data), c_void_p(F.ctypes.data),
-            V.shape[0], F.shape[0], c_void_p(gt_face_labels.ctypes.data), c_void_p(gt_masks.ctypes.data),
-            c_float(0.99), c_void_p(gt_output_label.ctypes.data))
+        #     Regiongrow.RegionGrowing(c_void_p(pb.ctypes.data), c_void_p(F.ctypes.data),
+        #     V.shape[0], F.shape[0], c_void_p(gt_face_labels.ctypes.data), c_void_p(gt_masks.ctypes.data),
+        #     c_float(0.99), c_void_p(gt_output_label.ctypes.data))
 
-            pb = np.zeros((edg.shape[0]), dtype='int32')
-            for k in range(V.shape[0]):
-                if b[k] == 1:
-                    pb[edg[:,0]==k] = 1
-                    pb[edg[:,1]==k] = 1
+        #     pb = np.zeros((edg.shape[0]), dtype='int32')
+        #     for k in range(V.shape[0]):
+        #         if b[k] == 1:
+        #             pb[edg[:,0]==k] = 1
+        #             pb[edg[:,1]==k] = 1
 
-            Regiongrow.RegionGrowing(c_void_p(pb.ctypes.data), c_void_p(F.ctypes.data),
-            V.shape[0], F.shape[0], c_void_p(face_labels.ctypes.data), c_void_p(masks.ctypes.data),
-            c_float(0.99), c_void_p(output_label.ctypes.data))
+        #     Regiongrow.RegionGrowing(c_void_p(pb.ctypes.data), c_void_p(F.ctypes.data),
+        #     V.shape[0], F.shape[0], c_void_p(face_labels.ctypes.data), c_void_p(masks.ctypes.data),
+        #     c_float(0.99), c_void_p(output_label.ctypes.data))
 
-            pp = np.argmax(type_pred.data.cpu().numpy(), axis=1)
+        #     pp = np.argmax(type_pred.data.cpu().numpy(), axis=1)
 
-            # colors = np.random.rand(10000, 3)
-            # fp = open('visual/%s.obj'%('prim-pred'), 'w')
-            # for i in range(V.shape[0]):
-            #     v = V[i]
-            #     if output_label[i] < 0:
-            #         p = np.array([0,0,0])
-            #     else:
-            #         p = colors[output_label[i]]
-            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
-            # fp.close()
+        #     # colors = np.random.rand(10000, 3)
+        #     # fp = open('visual/%s.obj'%('prim-pred'), 'w')
+        #     # for i in range(V.shape[0]):
+        #     #     v = V[i]
+        #     #     if output_label[i] < 0:
+        #     #         p = np.array([0,0,0])
+        #     #     else:
+        #     #         p = colors[output_label[i]]
+        #     #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+        #     # fp.close()
 
-            # fp = open('visual/%s.obj'%('prim-gt'), 'w')
-            # for i in range(V.shape[0]):
-            #     v = V[i]
-            #     if gt_output_label[i] < 0:
-            #         p = np.array([0,0,0])
-            #     else:
-            #         p = colors[gt_output_label[i]]
-            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
-            # fp.close()
+        #     # fp = open('visual/%s.obj'%('prim-gt'), 'w')
+        #     # for i in range(V.shape[0]):
+        #     #     v = V[i]
+        #     #     if gt_output_label[i] < 0:
+        #     #         p = np.array([0,0,0])
+        #     #     else:
+        #     #         p = colors[gt_output_label[i]]
+        #     #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+        #     # fp.close()
 
-            # fp = open('visual/%s.obj'%('type-pred'), 'w')
-            # for i in range(V.shape[0]):
-            #     v = V[i]
-            #     if pp[i] < 0:
-            #         p = np.array([0,0,0])
-            #     else:
-            #         p = colors[pp[i]]
-            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
-            # fp.close()
+        #     # fp = open('visual/%s.obj'%('type-pred'), 'w')
+        #     # for i in range(V.shape[0]):
+        #     #     v = V[i]
+        #     #     if pp[i] < 0:
+        #     #         p = np.array([0,0,0])
+        #     #     else:
+        #     #         p = colors[pp[i]]
+        #     #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+        #     # fp.close()
 
-            # fp = open('visual/%s.obj'%('type-gt'), 'w')
-            # for i in range(V.shape[0]):
-            #     v = V[i]
-            #     if semantic[i] < 0:
-            #         p = np.array([0,0,0])
-            #     else:
-            #         p = colors[semantic[i]]
-            #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
-            # fp.close()
+        #     # fp = open('visual/%s.obj'%('type-gt'), 'w')
+        #     # for i in range(V.shape[0]):
+        #     #     v = V[i]
+        #     #     if semantic[i] < 0:
+        #     #         p = np.array([0,0,0])
+        #     #     else:
+        #     #         p = colors[semantic[i]]
+        #     #     fp.write('v %f %f %f %f %f %f\n'%(v[0],v[1],v[2],p[0],p[1],p[2]))
+        #     # fp.close()
 
-            semantic_faces = pp[F[:,0]]
-            semantic_faces_gt = semantic.data.cpu().numpy()[F[:,0]]
-            # semantic_faces = semantic_faces_gt
+        #     semantic_faces = pp[F[:,0]]
+        #     semantic_faces_gt = semantic.data.cpu().numpy()[F[:,0]]
+        #     # semantic_faces = semantic_faces_gt
 
-            s_iou, p_iou = compute_iou_RG(gt_face_labels, face_labels, semantic_faces, semantic_faces_gt)
-            test_siou.append(s_iou)
-            test_piou.append(p_iou)
+        #     s_iou, p_iou = compute_iou_RG(gt_face_labels, face_labels, semantic_faces, semantic_faces_gt)
+        #     test_siou.append(s_iou)
+        #     test_piou.append(p_iou)
         
-        s_iou = np.mean(test_siou)
-        p_iou = np.mean(test_piou)
+        # s_iou = np.mean(test_siou)
+        # p_iou = np.mean(test_piou)
 
+        spec_cluster_pred = block_mean_shift_gpu(coord, primitive_embedding, offset, bandwidth=args.bandwidth)
         # spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
-        # s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
+        s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
         # All Reduce loss
         if args.multiprocessing_distributed:
             # dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
