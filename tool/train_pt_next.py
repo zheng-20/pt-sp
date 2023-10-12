@@ -1,4 +1,5 @@
 import os, sys
+import requests
 
 import trimesh
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -536,7 +537,7 @@ def validate(val_loader, model, criterion, boundary_criterion):
     s_iou_meter = AverageMeter()
     type_iou_meter = AverageMeter()
 
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     # boundarymodel.eval()
     model.eval()
@@ -686,8 +687,8 @@ def validate(val_loader, model, criterion, boundary_criterion):
         # s_iou = np.mean(test_siou)
         # p_iou = np.mean(test_piou)
 
-        spec_cluster_pred = block_mean_shift_gpu(coord, primitive_embedding, offset, bandwidth=args.bandwidth)
-        # spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
+        # spec_cluster_pred = block_mean_shift_gpu(coord, primitive_embedding, offset, bandwidth=args.bandwidth)
+        spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
         s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
         # All Reduce loss
         if args.multiprocessing_distributed:
@@ -743,4 +744,17 @@ def validate(val_loader, model, criterion, boundary_criterion):
 if __name__ == '__main__':
     import gc
     gc.collect()
-    main()
+    try:
+        main()
+    except Exception as e:
+        # 添加异常处理，如果出现异常，发送微信通知
+        print(str(e))
+        headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
+        resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+            json={
+                "title": "A100: The training has stopped",
+                "name": "Your network training has made an error",
+                "content": str(e)
+            }, headers = headers)
+        import ipdb
+        ipdb.set_trace()
