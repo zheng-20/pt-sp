@@ -7,7 +7,7 @@ DATA:
   voxel_size: 0.005
   voxel_max: 80000
   train_loop: 4
-  val_loop: 0.002
+  val_loop: 1
 
 TRAIN:
   #arch
@@ -49,7 +49,7 @@ TRAIN:
   use_amp: False
   optimizer: AdamW 
   ignore_label: -100
-  train_gpu: [1]
+  train_gpu: [3]
   workers: 4  # data loader workers
   batch_size: 8  # batch size for training
   batch_size_val: 4  # batch size for validation during training, memory and speed tradeoff
