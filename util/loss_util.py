@@ -257,7 +257,7 @@ def mean_shift_gpu(x, offset, bandwidth):
     N, c = x.shape
     # IDX = torch.zeros(N).to(x.device).long()
     IDX = np.zeros(N, dtype=np.int)
-    ms = MeanShift_GPU(bandwidth=bandwidth, batch_size=700)
+    ms = MeanShift_GPU(bandwidth = bandwidth, batch_size = 700, max_iter = 10, eps = 1e-5, check_converge = False)
     for i in range(len(offset)):
         if i == 0:
             pred = x[0:offset[i]]
@@ -412,6 +412,8 @@ def mean_IOU_primitive_segment(matching, predicted_labels, labels, pred_prim, gt
 
 			# evaluation of primitive type prediction performance
 			gt_prim_type_k = gt_prim[b][gt_indices][0]
+			# if gt_prim[b][gt_indices][0] != np.argmax(np.bincount(gt_prim[b][gt_indices])):
+			# 	gt_prim_type_k = np.argmax(np.bincount(gt_prim[b][gt_indices]))
 			try:
 				predicted_prim_type_k = pred_prim[b][r]
 			except:

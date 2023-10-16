@@ -1,4 +1,5 @@
 import os, sys
+import requests
 
 import trimesh
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -526,9 +527,9 @@ def validate(val_loader, model, criterion, boundary_criterion):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # loss_meter = AverageMeter()
-    # intersection_meter = AverageMeter()
-    # union_meter = AverageMeter()
-    # target_meter = AverageMeter()
+    intersection_meter = AverageMeter()
+    union_meter = AverageMeter()
+    target_meter = AverageMeter()
     feat_loss_meter = AverageMeter()
     type_loss_meter = AverageMeter()
     boundary_loss_meter = AverageMeter()
@@ -536,7 +537,7 @@ def validate(val_loader, model, criterion, boundary_criterion):
     s_iou_meter = AverageMeter()
     type_iou_meter = AverageMeter()
 
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     # boundarymodel.eval()
     model.eval()
@@ -576,13 +577,13 @@ def validate(val_loader, model, criterion, boundary_criterion):
         #     n = count.item()
         #     loss /= n
 
-        # intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-        # if args.multiprocessing_distributed:
-        #     dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        # intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+        intersection, union, target = intersectionAndUnionGPU(type_per_point.max(1)[1], semantic, args.classes, args.ignore_label)
+        if args.multiprocessing_distributed:
+            dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
+        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
-        # accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         # loss_meter.update(loss.item(), n)
         
         # softmax = torch.nn.Softmax(dim=1)
@@ -686,9 +687,10 @@ def validate(val_loader, model, criterion, boundary_criterion):
         # s_iou = np.mean(test_siou)
         # p_iou = np.mean(test_piou)
 
-        spec_cluster_pred = block_mean_shift_gpu(coord, primitive_embedding, offset, bandwidth=args.bandwidth)
-        # spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
+        # spec_cluster_pred = block_mean_shift_gpu(coord, primitive_embedding, offset, bandwidth=args.bandwidth)
+        spec_cluster_pred = mean_shift_gpu(primitive_embedding, offset, bandwidth=args.bandwidth)
         s_iou, p_iou = compute_iou(label, spec_cluster_pred, type_per_point, semantic, offset)
+        # s_iou, p_iou = 0, 0
         # All Reduce loss
         if args.multiprocessing_distributed:
             # dist.all_reduce(feat_loss.div_(torch.cuda.device_count()))
@@ -723,16 +725,16 @@ def validate(val_loader, model, criterion, boundary_criterion):
                                                           s_iou_meter=s_iou_meter,
                                                           type_iou_meter=type_iou_meter))
 
-    # iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    # accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    # mIoU = np.mean(iou_class)
-    # mAcc = np.mean(accuracy_class)
-    # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
+    mIoU = np.mean(iou_class)
+    mAcc = np.mean(accuracy_class)
+    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
 
     if main_process():
-        # logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
-        # for i in range(args.classes):
-        #     logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
+        logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
+        for i in range(args.classes):
+            logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
         logger.info('Val result: Seg_mIoU/Type_mIoU {:.4f}/{:.4f}.'.format(s_iou_meter.avg, type_iou_meter.avg))
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
 
@@ -743,4 +745,17 @@ def validate(val_loader, model, criterion, boundary_criterion):
 if __name__ == '__main__':
     import gc
     gc.collect()
-    main()
+    try:
+        main()
+    except Exception as e:
+        # 添加异常处理，如果出现异常，发送微信通知
+        print(str(e))
+        headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjExNjc4OCwidXVpZCI6ImQzZjBmOGIyLWJmNWMtNDkyMy1hMzMyLTEyN2ViNTg4ZDEyMCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.ma-DgwI8MuctNwGWyoVoIVfr7r0Gt64nwJA_U4FToy2lg4ueMhWPlybP0UxP-yKw5_KpfNil4EcWe7t5Wc5Irw"}
+        resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+            json={
+                "title": "A100: The training has stopped",
+                "name": "Your network training has made an error",
+                "content": str(e)
+            }, headers = headers)
+        import ipdb
+        ipdb.set_trace()

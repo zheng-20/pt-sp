@@ -46,7 +46,7 @@ TRAIN:
   warmup: linear
   warmup_iters: 1500
   warmup_ratio: 0.000001
-  use_amp: False
+  use_amp: True
   optimizer: AdamW 
   ignore_label: -100
   train_gpu: [3, 4, 6, 7]
@@ -66,7 +66,7 @@ TRAIN:
   save_freq: 1
   save_path: runs/abc
   weight:  # path to initial weight (default: none)
-  resume:  # path to latest checkpoint (default: none)
+  resume: exp/abc_prim_boundary_aggre/3layer_128test/model/model_last.pth # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   test_only: False  # evaluate on test set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 1
